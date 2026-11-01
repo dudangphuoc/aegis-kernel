@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/dudangphuoc/AegisKernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
 )
 
 // ConnectionFactory là hàm tạo instance DB/Store cho một Tenant

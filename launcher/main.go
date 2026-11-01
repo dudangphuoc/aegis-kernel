@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dudangphuoc/AegisKernel/core/controlplane"
-	"github.com/dudangphuoc/AegisKernel/core/feature"
-	"github.com/dudangphuoc/AegisKernel/core/gateway"
-	"github.com/dudangphuoc/AegisKernel/core/loader"
+	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
+	"github.com/dudangphuoc/aegis-kernel/core/feature"
+	"github.com/dudangphuoc/aegis-kernel/core/gateway"
+	"github.com/dudangphuoc/aegis-kernel/core/loader"
 )
 
 func main() {

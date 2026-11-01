@@ -5,13 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/adapter/storage"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/business/command"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
-	mfasecurity "github.com/dudangphuoc/AegisKernel/modules/auth/internal/features/mfa_security"
-	"github.com/dudangphuoc/AegisKernel/sdk/cqrs"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/adapter/storage"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/business/command"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
+	mfasecurity "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/mfa_security"
+	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 func TestAuthModule_MultiTenantFeatureOverride(t *testing.T) {

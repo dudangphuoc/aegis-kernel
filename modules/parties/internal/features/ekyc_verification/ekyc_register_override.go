@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/business/command"
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/domain"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/business/command"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 // EKYCRegisterOverrideHandler ghi đè luồng RegisterPartyCommand khi Tenant bật cờ "ekyc_verification"

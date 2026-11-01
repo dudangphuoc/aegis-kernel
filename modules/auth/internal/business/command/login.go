@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type LoginCommand struct {

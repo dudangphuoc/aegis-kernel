@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/adapter/storage"
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/business/command"
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/business/query"
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/domain"
-	ekycverification "github.com/dudangphuoc/AegisKernel/modules/parties/internal/features/ekyc_verification"
-	employeedirectory "github.com/dudangphuoc/AegisKernel/modules/parties/internal/features/employee_directory"
-	"github.com/dudangphuoc/AegisKernel/sdk/cqrs"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/adapter/storage"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/business/command"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/business/query"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
+	ekycverification "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/ekyc_verification"
+	employeedirectory "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/employee_directory"
+	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {

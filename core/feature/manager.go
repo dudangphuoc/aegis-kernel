@@ -2,7 +2,7 @@ package feature
 
 import (
 	"context"
-	"github.com/dudangphuoc/AegisKernel/core/controlplane"
+	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
 )
 
 type FeatureManager struct {

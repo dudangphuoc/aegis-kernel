@@ -13,10 +13,10 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	authmigrations "github.com/dudangphuoc/AegisKernel/modules/auth/migrations"
-	partiesmigrations "github.com/dudangphuoc/AegisKernel/modules/parties/migrations"
-	"github.com/dudangphuoc/AegisKernel/sdk/migrator"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
+	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
+	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
 	"golang.org/x/crypto/bcrypt"
 )
 

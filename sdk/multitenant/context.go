@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/dudangphuoc/AegisKernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
 )
 
 type tenantCtxKey struct{}

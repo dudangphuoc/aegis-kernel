@@ -3,7 +3,7 @@ package query
 import (
 	"context"
 
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
 )
 
 type ListTenantsHandler struct {

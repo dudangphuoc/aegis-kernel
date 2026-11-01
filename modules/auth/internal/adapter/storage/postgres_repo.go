@@ -8,10 +8,10 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	authmigrations "github.com/dudangphuoc/AegisKernel/modules/auth/migrations"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
-	"github.com/dudangphuoc/AegisKernel/sdk/migrator"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type PostgresAuthRepo struct {

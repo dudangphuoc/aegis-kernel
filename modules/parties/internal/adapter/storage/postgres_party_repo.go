@@ -10,10 +10,10 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	partiesmigrations "github.com/dudangphuoc/AegisKernel/modules/parties/migrations"
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/domain"
-	"github.com/dudangphuoc/AegisKernel/sdk/migrator"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type PostgresPartyRepo struct {

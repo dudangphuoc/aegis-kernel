@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	authmigrations "github.com/dudangphuoc/AegisKernel/modules/auth/migrations"
-	partiesmigrations "github.com/dudangphuoc/AegisKernel/modules/parties/migrations"
-	"github.com/dudangphuoc/AegisKernel/sdk/migrator"
+	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
+	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
+	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
 )
 
 type MigrationService struct {

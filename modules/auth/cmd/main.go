@@ -6,14 +6,14 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/adapter/storage"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/business/command"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
-	mfasecurity "github.com/dudangphuoc/AegisKernel/modules/auth/internal/features/mfa_security"
-	securityaudit "github.com/dudangphuoc/AegisKernel/modules/auth/internal/features/security_audit"
-	"github.com/dudangphuoc/AegisKernel/sdk"
-	"github.com/dudangphuoc/AegisKernel/sdk/cqrs"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/adapter/storage"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/business/command"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
+	mfasecurity "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/mfa_security"
+	securityaudit "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/security_audit"
+	"github.com/dudangphuoc/aegis-kernel/sdk"
+	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
 )
 
 func main() {

@@ -3,7 +3,7 @@ package employeedirectory
 import (
 	"context"
 
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
 )
 
 type DepartmentSummary struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type HandlerFunc[Req any, Res any] func(ctx context.Context, req Req) (Res, error)

@@ -10,10 +10,10 @@ import (
 	"sync"
 
 	"github.com/hashicorp/go-plugin"
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	"github.com/dudangphuoc/AegisKernel/core/controlplane"
-	"github.com/dudangphuoc/AegisKernel/core/feature"
-	"github.com/dudangphuoc/AegisKernel/core/transport"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
+	"github.com/dudangphuoc/aegis-kernel/core/feature"
+	"github.com/dudangphuoc/aegis-kernel/core/transport"
 )
 
 type LoadedModule struct {

@@ -1,4 +1,4 @@
-module github.com/dudangphuoc/AegisKernel
+module github.com/dudangphuoc/aegis-kernel
 
 go 1.27.3
 

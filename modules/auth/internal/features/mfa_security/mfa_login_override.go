@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/business/command"
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/business/command"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 // MFALoginOverrideHandler ghi đè luồng LoginCommand khi Tenant bật feature flag "mfa_security"

@@ -10,10 +10,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	"github.com/dudangphuoc/AegisKernel/core/controlplane"
-	"github.com/dudangphuoc/AegisKernel/core/feature"
-	"github.com/dudangphuoc/AegisKernel/core/loader"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
+	"github.com/dudangphuoc/aegis-kernel/core/feature"
+	"github.com/dudangphuoc/aegis-kernel/core/loader"
 )
 
 type APIGateway struct {

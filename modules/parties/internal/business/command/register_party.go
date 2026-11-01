@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dudangphuoc/AegisKernel/modules/parties/internal/domain"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type RegisterPartyCommand struct {

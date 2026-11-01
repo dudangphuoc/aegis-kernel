@@ -14,9 +14,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/hashicorp/go-plugin"
-	"github.com/dudangphuoc/AegisKernel/core/contract"
-	"github.com/dudangphuoc/AegisKernel/core/transport"
-	"github.com/dudangphuoc/AegisKernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/transport"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type RouteHandlerFunc func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error)

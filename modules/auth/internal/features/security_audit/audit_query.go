@@ -3,7 +3,7 @@ package securityaudit
 import (
 	"context"
 
-	"github.com/dudangphuoc/AegisKernel/modules/auth/internal/domain"
+	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
 )
 
 // SecurityAuditQueryHandler mở rộng API truy xuất nhật ký bảo mật cho Tenant

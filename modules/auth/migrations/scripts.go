@@ -2,7 +2,7 @@ package scripts
 
 import (
 	_ "embed"
-	"github.com/dudangphuoc/AegisKernel/sdk/migrator"
+	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
 )
 
 //go:embed 0001_init_auth.up.sql

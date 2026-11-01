@@ -5,7 +5,7 @@ import (
 	"net/rpc"
 
 	"github.com/hashicorp/go-plugin"
-	"github.com/dudangphuoc/AegisKernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
 )
 
 // Handshake là cấu hình bắt tay xác thực bảo mật giữa Kernel và Plugin
