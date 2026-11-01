@@ -1,0 +1,3 @@
+ALTER TABLE parties DROP COLUMN IF EXISTS kyc_notes;
+ALTER TABLE parties DROP COLUMN IF EXISTS tax_code;
+

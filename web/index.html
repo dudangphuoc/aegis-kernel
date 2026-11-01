@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AegisKernel — Control Plane Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --bg-main: #0b0f19;
+        --bg-card: #111827;
+        --border-color: #1f2937;
+        --primary: #3b82f6;
+        --primary-hover: #2563eb;
+        --accent: #10b981;
+        --danger: #ef4444;
+        --warning: #f59e0b;
+        --text-main: #f9fafb;
+        --text-muted: #9ca3af;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+        background-color: var(--bg-main);
+        color: var(--text-main);
+        min-height: 100vh;
+      }
+      code, pre {
+        font-family: 'JetBrains Mono', monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

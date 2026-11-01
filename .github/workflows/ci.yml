@@ -1,0 +1,26 @@
+name: Go CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Run Unit & Race Condition Tests
+        run: go test -v -race -cover ./...
+
+      - name: Build API Binary
+        run: CGO_ENABLED=0 go build -v -o bin/api ./cmd/api
+
