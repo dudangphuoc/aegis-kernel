@@ -15,13 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	"github.com/dudangphuoc/aegis-kernel/core/transport"
+	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/hashicorp/go-plugin"
-	"github.com/dudangphuoc/aegis-kernel/core/contract"
-	"github.com/dudangphuoc/aegis-kernel/core/transport"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
-	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 type RouteHandlerFunc func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error)
@@ -38,7 +38,7 @@ type ModuleApp struct {
 	routes        map[string]routeItem
 	initHook      func(ctx context.Context, cfg contract.ModuleInitConfig) error
 	shutdownHooks []func(ctx context.Context) error
-	database      *dbaudit.Manager // nil nếu module không dùng DB của tenant
+	database      *tenantdb.Manager // nil nếu module không dùng DB của tenant
 	subscriptions map[string]EventHandlerFunc
 	outbox        *Outbox
 	busEnabled    bool
@@ -53,29 +53,24 @@ func NewModuleApp(desc contract.ModuleDescriptor) *ModuleApp {
 		outbox:        NewOutbox(0),
 		logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)).With(slog.String("module", desc.Name)),
 	}
-	// Ack của Kernel Bus -> relay audit xóa dòng outbox tương ứng trong DB của tenant
-	app.outbox.SetAckHandler(func(ids []string) {
-		if db := app.Database(); db != nil {
-			db.Acked(ids)
-		}
-	})
 	return app
 }
 
-// UseTenantDatabase bật DB theo tenant có audit tại tầng DB (trigger + outbox + relay qua Kernel Bus).
+// UseTenantDatabase bật DB của tenant, gắn schema biz_<tên module>. Thay đổi dữ liệu được trigger capture
+// ghi vào platform.changes; Kernel đọc lại để dựng audit (không có relay trong module).
 // Repository lấy kết nối qua Database().Resolve(ctx). Gọi 1 lần trước sdk.Serve.
-func (app *ModuleApp) UseTenantDatabase() *dbaudit.Manager {
+func (app *ModuleApp) UseTenantDatabase() *tenantdb.Manager {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	if app.database == nil {
-		app.database = dbaudit.NewManager(app.descriptor.Name, app, app.logger)
+		app.database = tenantdb.NewManager("biz_" + app.descriptor.Name)
 		app.shutdownHooks = append(app.shutdownHooks, app.database.Close)
 	}
 	return app.database
 }
 
 // Database trả Manager đã bật bằng UseTenantDatabase (nil nếu chưa bật)
-func (app *ModuleApp) Database() *dbaudit.Manager {
+func (app *ModuleApp) Database() *tenantdb.Manager {
 	app.mu.RLock()
 	defer app.mu.RUnlock()
 	return app.database
@@ -105,14 +100,11 @@ func (app *ModuleApp) GetDescriptor(_ context.Context) (contract.ModuleDescripto
 	defer app.mu.RUnlock()
 	desc := app.descriptor
 	desc.Subscriptions = slices.Clone(app.descriptor.Subscriptions)
+	desc.AuditTables = slices.Clone(app.descriptor.AuditTables)
 	return desc, nil
 }
 
 func (app *ModuleApp) Initialize(ctx context.Context, config contract.ModuleInitConfig) error {
-	// Giao nốt outbox audit còn tồn của các tenant đã biết (VD: module crash trước khi kịp relay)
-	if db := app.Database(); db != nil {
-		db.RegisterTenants(config.Tenants)
-	}
 	if app.initHook != nil {
 		return app.initHook(ctx, config)
 	}
@@ -146,7 +138,7 @@ func (app *ModuleApp) Execute(ctx context.Context, req contract.InvocationReques
 	// Ngữ cảnh audit chỉ là metadata gắn vào transaction; việc ghi nhận thay đổi do trigger ở tầng DB đảm nhận.
 	tenantCtx := multitenant.WithTenant(ctx, req.Tenant)
 	tenantCtx = withCallChain(tenantCtx, ParseCallChain(req.Headers[contract.HeaderCallChain]))
-	tenantCtx = dbaudit.WithRequestContext(tenantCtx, dbaudit.RequestContextFromInvocation(app.descriptor.Name, req))
+	tenantCtx = tenantdb.WithRequestContext(tenantCtx, tenantdb.RequestContextFromInvocation(app.descriptor.Name, req))
 	return item.handler(tenantCtx, req)
 }
 

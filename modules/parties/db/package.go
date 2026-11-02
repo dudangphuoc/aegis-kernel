@@ -1,0 +1,23 @@
+// Package db chứa script schema của module parties (schema biz_parties). Control Plane áp lên DB tenant;
+// sau này đi trong gói (platform pack) thay vì được import trực tiếp.
+package db
+
+import (
+	"embed"
+
+	"github.com/dudangphuoc/aegis-kernel/framework/core/data/scripts"
+)
+
+const (
+	Key     = "parties"
+	Version = "1.0.0"
+)
+
+//go:embed *.sql
+var files embed.FS
+
+// Package trả package script của module (lint profile module)
+func Package() (scripts.Package, error) {
+	s, err := scripts.LoadDir(files, ".")
+	return scripts.Package{Name: Key, Version: Version, Schema: scripts.ModuleSchema(Key), Profile: scripts.ProfileModule, LocalTables: nil, Scripts: s}, err
+}

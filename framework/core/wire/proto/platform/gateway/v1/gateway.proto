@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+// Gateway cloud <-> hub qua queue platform.gateway.<keyId> (direct reply-to).
+// Body niêm phong AES-256-GCM bằng khoá HKDF(busKey, "gateway:<keyId>"); AAD gồm cả metadata.
+package platform.gateway.v1;
+
+option go_package = "github.com/dudangphuoc/aegis-kernel/framework/core/wire/gatewayv1";
+
+message GatewayHeader {
+  string name = 1;
+  string value = 2;
+}
+
+message GatewayRequest {
+  string request_id = 1;
+  string key_id = 2;
+  string method = 3;
+  string path = 4;
+  string query = 5;
+  repeated GatewayHeader headers = 6;
+  string client_ip = 7;
+  int64 deadline_unix_ms = 8;
+  bytes sealed_body = 9;
+  bytes nonce = 10;
+}
+
+message GatewayResponse {
+  string request_id = 1;
+  int32 status = 2;
+  repeated GatewayHeader headers = 3;
+  bytes sealed_body = 4;
+  bytes nonce = 5;
+}

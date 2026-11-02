@@ -3,28 +3,31 @@ package test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	authdb "github.com/dudangphuoc/aegis-kernel/modules/auth/db"
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/adapter/storage"
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/business/command"
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
 	mfasecurity "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/mfa_security"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 	"github.com/dudangphuoc/aegis-kernel/sdk/security"
-	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
-	"github.com/dudangphuoc/aegis-kernel/sdk/migrator/testdb"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb/tenanttest"
 )
 
 func TestAuthModule_MultiTenantFeatureOverride(t *testing.T) {
-	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/auth_tenant_a?sslmode=disable", authmigrations.GetAuthMigrationScripts())
-	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/auth_tenant_b?sslmode=disable", authmigrations.GetAuthMigrationScripts())
+	pkg, err := authdb.Package()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, dsnA := tenanttest.FreshTenant(t, "tenant_auth_test_a", pkg)
+	_, dsnB := tenanttest.FreshTenant(t, "tenant_auth_test_b", pkg)
 	secret := []byte("test-secret-test-secret-test-secret")
-	dbm := dbaudit.NewManager("auth", nil, slog.Default())
+	dbm := tenantdb.NewManager("biz_auth")
 	t.Cleanup(func() { _ = dbm.Close(context.Background()) })
 	repo := storage.NewPostgresAuthRepo(dbm)
 	stdLoginHandler := command.NewLoginHandler(repo, secret)
@@ -36,16 +39,23 @@ func TestAuthModule_MultiTenantFeatureOverride(t *testing.T) {
 	// Context Tenant A: mfa_security = false
 	ctxTenantA := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-a",
-		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/auth_tenant_a?sslmode=disable"),
+		ConnectionString: dsnA,
 		Features:         map[string]bool{"mfa_security": false},
 	})
 
 	// Context Tenant B: mfa_security = true
 	ctxTenantB := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-b",
-		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/auth_tenant_b?sslmode=disable"),
+		ConnectionString: dsnB,
 		Features:         map[string]bool{"mfa_security": true},
 	})
+
+	// Tài khoản admin mỗi tenant (Control Plane tạo khi provision; script không được seed dữ liệu)
+	for _, ctx := range []context.Context{ctxTenantA, ctxTenantB} {
+		if err := repo.CreateUser(ctx, &domain.UserAccount{ID: "USR-ADMIN-01", Username: "admin", Password: "pass123", Role: "TENANT_ADMIN", MFACode: "654321"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// 1. Tenant A đăng nhập chỉ cần user/pass (Standard Business)
 	sessionA, err := dispatcher.Dispatch(ctxTenantA, command.LoginCommand{

@@ -13,9 +13,9 @@ import (
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
 	mfasecurity "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/mfa_security"
 	"github.com/dudangphuoc/aegis-kernel/sdk"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
 	"github.com/dudangphuoc/aegis-kernel/sdk/security"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
 )
 
 func main() {
@@ -23,6 +23,9 @@ func main() {
 		Name:        "auth",
 		Version:     "1.0.0",
 		Description: "Module quản lý đăng nhập, security, và cấp phát Tenants",
+		AuditTables: []contract.AuditTable{
+			{Table: "users", Entity: "UserAccount", PK: "id", Ignore: []string{"store_id"}, Secrets: []string{"password", "mfa_code"}},
+		},
 	})
 
 	jwtSecret, err := security.SecretFromEnv()
@@ -41,7 +44,6 @@ func main() {
 	loginDispatcher := cqrs.NewFeatureDispatcher[command.LoginCommand, *domain.AuthSession]("login_dispatcher", stdLoginHandler.Handle).
 		RegisterOverride("mfa_security", mfaLoginOverride.Handle)
 
-
 	// 3. Đăng ký các Routes của Module
 	// Route 1: Đăng nhập (Áp dụng Feature Override tự động theo Tenant)
 	app.RegisterRoute(contract.RouteDefinition{
@@ -51,7 +53,7 @@ func main() {
 		RequireAuth:    false,
 		OptionalTenant: false,
 	}, func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error) {
-		dbaudit.SetAction(ctx, "LOGIN")
+		tenantdb.SetAction(ctx, "LOGIN")
 		var cmd command.LoginCommand
 		if err := json.Unmarshal(req.Body, &cmd); err != nil {
 			return sdk.JSONResponse(http.StatusBadRequest, map[string]string{"error": "invalid json body"})
@@ -67,7 +69,6 @@ func main() {
 		}
 		return sdk.JSONResponse(http.StatusOK, session)
 	})
-
 
 	sdk.Serve(app)
 }

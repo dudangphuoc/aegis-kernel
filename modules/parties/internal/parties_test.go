@@ -3,12 +3,12 @@ package test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	partiesdb "github.com/dudangphuoc/aegis-kernel/modules/parties/db"
 	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/adapter/storage"
 	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/business/command"
 	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/business/query"
@@ -16,18 +16,31 @@ import (
 	ekycverification "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/ekyc_verification"
 	employeedirectory "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/employee_directory"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
-	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
-	"github.com/dudangphuoc/aegis-kernel/sdk/migrator/testdb"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb/tenanttest"
 )
 
-func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
-	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable", partiesmigrations.GetPartiesMigrationScripts())
-	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/parties_tenant_b?sslmode=disable", partiesmigrations.GetPartiesMigrationScripts())
-	dbm := dbaudit.NewManager("parties", nil, slog.Default())
+// tenantDB dựng DB tenant name với schema biz_parties, trả DSN runtime
+func tenantDB(t *testing.T, name string) string {
+	t.Helper()
+	pkg, err := partiesdb.Package()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, dsn := tenanttest.Tenant(t, name, pkg)
+	return dsn
+}
+
+func newManager(t *testing.T) *tenantdb.Manager {
+	dbm := tenantdb.NewManager("biz_parties")
 	t.Cleanup(func() { _ = dbm.Close(context.Background()) })
-	repo := storage.NewPostgresPartyRepo(dbm)
+	return dbm
+}
+
+func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
+	dsnA, dsnB := tenantDB(t, "tenant_test_a"), tenantDB(t, "tenant_test_b")
+	repo := storage.NewPostgresPartyRepo(newManager(t))
 	stdHandler := command.NewRegisterPartyHandler(repo)
 	ekycOverride := ekycverification.NewEKYCRegisterOverrideHandler(repo)
 
@@ -39,14 +52,14 @@ func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
 	// Context Tenant A: ekyc_verification = false (Chấp nhận CMND 9 số)
 	ctxTenantA := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-a",
-		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable"),
+		ConnectionString: dsnA,
 		Features:         map[string]bool{"ekyc_verification": false, "employee_directory": true},
 	})
 
 	// Context Tenant B: ekyc_verification = true (Bắt buộc CCCD 12 số)
 	ctxTenantB := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-b",
-		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/parties_tenant_b?sslmode=disable"),
+		ConnectionString: dsnB,
 		Features:         map[string]bool{"ekyc_verification": true, "employee_directory": false},
 	})
 
@@ -127,23 +140,30 @@ func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
 }
 
 func TestPartiesModule_EmployeeDirectoryFeatureExtend(t *testing.T) {
-	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable", partiesmigrations.GetPartiesMigrationScripts())
-	dbm := dbaudit.NewManager("parties", nil, slog.Default())
-	t.Cleanup(func() { _ = dbm.Close(context.Background()) })
-	repo := storage.NewPostgresPartyRepo(dbm)
+	dsnA := tenantDB(t, "tenant_test_a")
+	repo := storage.NewPostgresPartyRepo(newManager(t))
 	directoryHandler := employeedirectory.NewEmployeeDirectoryQueryHandler(repo)
 
 	ctxTenantA := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-a",
-		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable"),
+		ConnectionString: dsnA,
 		Features:         map[string]bool{"employee_directory": true},
 	})
+
+	// Dữ liệu mẫu không còn nằm trong script (script cấm DML vào bảng đồng bộ): tạo nhân viên qua nghiệp vụ
+	if _, err := command.NewRegisterPartyHandler(repo).Handle(ctxTenantA, command.RegisterPartyCommand{
+		Type: domain.PartyTypeEmployee, FullName: "Nhân viên mẫu", Email: "staff@alpha.com", Phone: "0900000000",
+		Identity: domain.IdentityDocument{Type: domain.IdentityTypeCMND, Number: fmt.Sprintf("9%08d", time.Now().UnixNano()%100000000), IssuedDate: "2020-01-01", IssuedPlace: "HN"},
+		Employee: &domain.EmployeeProfile{EmployeeCode: "EMP-T", Department: "IT", Position: "Engineer"},
+	}); err != nil {
+		t.Fatalf("seed employee: %v", err)
+	}
 
 	dir, err := directoryHandler.Handle(ctxTenantA)
 	if err != nil {
 		t.Fatalf("Failed to query employee directory: %v", err)
 	}
 	if dir.TotalEmployees < 1 {
-		t.Fatalf("Expected at least 1 employee (seeded), got %d", dir.TotalEmployees)
+		t.Fatalf("Expected at least 1 employee, got %d", dir.TotalEmployees)
 	}
 }

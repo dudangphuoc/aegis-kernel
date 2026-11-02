@@ -9,17 +9,17 @@ import (
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
 	_ "github.com/lib/pq"
 )
 
-// PostgresPartyRepo dùng DB đã bọc audit: INSERT/UPDATE (kể cả upsert) trên parties được trigger
-// ghi before/after vào outbox cùng transaction, repository không tự ghi audit.
+// PostgresPartyRepo làm việc trên schema biz_parties của DB tenant: INSERT/UPDATE (kể cả upsert) trên parties
+// được trigger capture ghi trước/sau cùng transaction, repository không tự ghi audit.
 type PostgresPartyRepo struct {
-	dbm *dbaudit.Manager
+	dbm *tenantdb.Manager
 }
 
-func NewPostgresPartyRepo(dbm *dbaudit.Manager) *PostgresPartyRepo {
+func NewPostgresPartyRepo(dbm *tenantdb.Manager) *PostgresPartyRepo {
 	return &PostgresPartyRepo{dbm: dbm}
 }
 
@@ -44,7 +44,7 @@ func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
 		$7, $8, $9, $10,
 		$11, $12, $13, $14, $15
 	)
-	ON CONFLICT (identity_number) DO UPDATE SET
+	ON CONFLICT (store_id, identity_number) DO UPDATE SET
 		full_name = EXCLUDED.full_name,
 		email = EXCLUDED.email,
 		phone = EXCLUDED.phone,
@@ -58,11 +58,14 @@ func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
 		createdAt = time.Now()
 	}
 
-	_, err = db.ExecContext(ctx, query,
-		p.ID, tenant.TenantID, string(p.Type), p.FullName, p.Email, p.Phone,
-		string(p.Identity.Type), p.Identity.Number, p.Identity.IssuedDate, p.Identity.IssuedPlace,
-		p.Identity.VerificationStatus, string(empJSON), string(custJSON), p.ProcessedBy, createdAt,
-	)
+	err = db.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, query,
+			p.ID, tenant.TenantID, string(p.Type), p.FullName, p.Email, p.Phone,
+			string(p.Identity.Type), p.Identity.Number, p.Identity.IssuedDate, p.Identity.IssuedPlace,
+			p.Identity.VerificationStatus, string(empJSON), string(custJSON), p.ProcessedBy, createdAt,
+		)
+		return err
+	})
 	if err != nil && strings.Contains(err.Error(), "duplicate key value") {
 		return domain.ErrDuplicateIdentity
 	}
@@ -81,7 +84,12 @@ func (r *PostgresPartyRepo) FindByID(ctx context.Context, id string) (*domain.Pa
 		   verification_status, employee_profile, customer_profile, processed_by, created_at
 	FROM parties WHERE id = $1`
 
-	return r.scanParty(db.QueryRowContext(ctx, query, id))
+	var p *domain.Party
+	err = db.Read(ctx, func(tx *sql.Tx) error {
+		p, err = r.scanParty(tx.QueryRowContext(ctx, query, id))
+		return err
+	})
+	return p, err
 }
 
 func (r *PostgresPartyRepo) FindByIdentityNumber(ctx context.Context, idNumber string) (*domain.Party, error) {
@@ -96,7 +104,12 @@ func (r *PostgresPartyRepo) FindByIdentityNumber(ctx context.Context, idNumber s
 		   verification_status, employee_profile, customer_profile, processed_by, created_at
 	FROM parties WHERE identity_number = $1`
 
-	return r.scanParty(db.QueryRowContext(ctx, query, idNumber))
+	var p *domain.Party
+	err = db.Read(ctx, func(tx *sql.Tx) error {
+		p, err = r.scanParty(tx.QueryRowContext(ctx, query, idNumber))
+		return err
+	})
+	return p, err
 }
 
 func (r *PostgresPartyRepo) List(ctx context.Context, filterType string) ([]*domain.Party, error) {
@@ -105,22 +118,32 @@ func (r *PostgresPartyRepo) List(ctx context.Context, filterType string) ([]*dom
 		return nil, err
 	}
 
+	var res []*domain.Party
+	err = db.Read(ctx, func(tx *sql.Tx) error {
+		res, err = r.list(ctx, tx, filterType)
+		return err
+	})
+	return res, err
+}
+
+func (r *PostgresPartyRepo) list(ctx context.Context, tx *sql.Tx, filterType string) ([]*domain.Party, error) {
 	var query string
 	var rows *sql.Rows
+	var err error
 	if filterType != "" {
 		query = `
 		SELECT id, tenant_id, party_type, full_name, email, phone,
 			   identity_type, identity_number, identity_issued_date, identity_issued_place,
 			   verification_status, employee_profile, customer_profile, processed_by, created_at
 		FROM parties WHERE UPPER(party_type) = UPPER($1) ORDER BY created_at DESC`
-		rows, err = db.QueryContext(ctx, query, filterType)
+		rows, err = tx.QueryContext(ctx, query, filterType)
 	} else {
 		query = `
 		SELECT id, tenant_id, party_type, full_name, email, phone,
 			   identity_type, identity_number, identity_issued_date, identity_issued_place,
 			   verification_status, employee_profile, customer_profile, processed_by, created_at
 		FROM parties ORDER BY created_at DESC`
-		rows, err = db.QueryContext(ctx, query)
+		rows, err = tx.QueryContext(ctx, query)
 	}
 	if err != nil {
 		return nil, err

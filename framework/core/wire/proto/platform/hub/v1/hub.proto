@@ -1,0 +1,219 @@
+syntax = "proto3";
+
+// Kênh hub <-> cloud qua RabbitMQ. Mọi message đi trong HubEnvelope:
+// chiều lên (platform.hub.up) ký HMAC-SHA256, chiều xuống (platform.hub.down) mã hoá AES-256-GCM.
+package platform.hub.v1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/dudangphuoc/aegis-kernel/framework/core/wire/hubv1";
+
+message HubEnvelope {
+  string message_id = 1;
+  string key_id = 2;
+  // Chiều lên: payload rõ, signature = HMAC. Chiều xuống: payload rỗng, sealed = bản mã của Any.
+  google.protobuf.Any payload = 3;
+  bytes sealed = 4;
+  bytes nonce = 5;
+  bytes signature = 6;
+  google.protobuf.Timestamp sent_at = 7;
+}
+
+// ---------- chiều lên ----------
+
+message HubHello {
+  string hub_version = 1;
+  string manifest_revision = 2;
+  // epoch đổi khi DB hub được dựng lại (fingerprint) => cloud bỏ cursor cũ
+  string epoch = 3;
+  uint64 last_shipped_seq = 4;
+  HubPreviousRun previous_run = 5;
+  repeated HubOutage outages = 6;
+}
+
+message HubPreviousRun {
+  google.protobuf.Timestamp started_at = 1;
+  google.protobuf.Timestamp last_alive_at = 2;
+  // update | stop | crash | power
+  string stop_reason = 3;
+  string hub_version = 4;
+}
+
+message HubOutage {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+  string cause = 3;
+}
+
+message HubHeartbeat {
+  string hub_version = 1;
+  string manifest_revision = 2;
+  uint64 pending_changes = 3;
+  // idle | downloading | switching | runtime-blocked
+  string update_state = 4;
+  string role = 5;
+  repeated HubPackageState packages = 6;
+  repeated HubLedgerState ledgers = 7;
+}
+
+message HubPackageState {
+  string key = 1;
+  string version = 2;
+  // running | failed | stopped
+  string state = 3;
+  bool flag_enabled = 4;
+  // lý do cờ bị ép tắt: start-failed, extension-conflict, settings-invalid...
+  string reason = 5;
+}
+
+message HubLedgerState {
+  string package = 1;
+  // sha256 trên danh sách (script, checksum) đã áp, để cloud đối chiếu với release
+  string digest = 2;
+  uint32 pending = 3;
+  uint32 ahead = 4;
+}
+
+message HubMetrics {
+  repeated HubMetric metrics = 1;
+}
+
+message HubMetric {
+  string name = 1;
+  double value = 2;
+  google.protobuf.Timestamp at = 3;
+}
+
+message HubGoodbye {
+  string reason = 1;
+}
+
+// Thay đổi bắt bằng trigger (platform.changes), seq theo thứ tự commit
+message HubChanges {
+  string epoch = 1;
+  bool resync = 2;
+  repeated HubRowChange changes = 3;
+}
+
+message HubRowChange {
+  uint64 seq = 1;
+  string schema = 2;
+  string table = 3;
+  // INSERT | UPDATE | DELETE
+  string op = 4;
+  bytes row_json = 5;
+  int64 txid = 6;
+}
+
+message HubEvents {
+  string epoch = 1;
+  string publisher = 2;
+  repeated HubEvent events = 3;
+}
+
+message HubEvent {
+  string event_id = 1;
+  string type = 2;
+  int64 txid = 3;
+  bytes payload = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}
+
+message HubPackageRequest {
+  string request_id = 1;
+  string key = 2;
+  string version = 3;
+}
+
+message HubQueryResult {
+  string request_id = 1;
+  // kết quả niêm phong bằng khoá console dẫn xuất từ bus key
+  bytes sealed = 2;
+  bytes nonce = 3;
+  string error = 4;
+}
+
+// ---------- chiều xuống ----------
+
+message HubWelcome {
+  bytes manifest_json = 1;
+  string cloud_epoch = 2;
+  uint64 cloud_last_seq = 3;
+  string role = 4;
+}
+
+message HubManifestPushed {
+  bytes manifest_json = 1;
+}
+
+message HubRoleChanged {
+  string role = 1;
+}
+
+message HubPackage {
+  string request_id = 1;
+  string key = 2;
+  string version = 3;
+  string sha256 = 4;
+  bytes zip = 5;
+  string error = 6;
+}
+
+message HubChangesAck {
+  string epoch = 1;
+  uint64 last_seq = 2;
+  // ok | rejected
+  string outcome = 3;
+  string error = 4;
+}
+
+message HubEventsAck {
+  string epoch = 1;
+  string publisher = 2;
+  int64 last_txid = 3;
+  string last_event_id = 4;
+}
+
+message HubResyncRequested {
+  string reason = 1;
+}
+
+message HubRejected {
+  string code = 1;
+  string message = 2;
+}
+
+message HubQueryRequest {
+  string request_id = 1;
+  // query | schema | table_query
+  string kind = 2;
+  string sql = 3;
+  HubTableQuery table_query = 4;
+  int64 deadline_unix_ms = 5;
+  uint32 max_rows = 6;
+}
+
+message HubTableQuery {
+  string schema = 1;
+  string table = 2;
+  repeated HubQueryFilter filters = 3;
+  repeated HubQuerySort sorts = 4;
+  uint32 offset = 5;
+  uint32 limit = 6;
+}
+
+message HubQueryFilter {
+  string column = 1;
+  string op = 2;
+  string value = 3;
+}
+
+message HubQuerySort {
+  string column = 1;
+  bool descending = 2;
+}
+
+message HubQueryCancel {
+  string request_id = 1;
+}

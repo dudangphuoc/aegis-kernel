@@ -8,32 +8,37 @@ import (
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	auditdb "github.com/dudangphuoc/aegis-kernel/modules/audit/db"
 	"github.com/dudangphuoc/aegis-kernel/modules/audit/internal/adapter/storage"
 	"github.com/dudangphuoc/aegis-kernel/modules/audit/internal/domain"
-	auditmigrations "github.com/dudangphuoc/aegis-kernel/modules/audit/migrations"
 	"github.com/dudangphuoc/aegis-kernel/sdk/audit"
-	"github.com/dudangphuoc/aegis-kernel/sdk/migrator/testdb"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb/tenanttest"
 )
-
-const testDSN = "postgres://postgres:postgres@localhost:5432/audit_tenant_test?sslmode=disable"
 
 // setup tạo DB sạch, ghi 3 envelope (INSERT, UPDATE, sự kiện đăng nhập) và trả về repo + kết nối thô để giả mạo
 func setup(t *testing.T) (context.Context, *storage.PostgresAuditRepo, *sql.DB) {
 	t.Helper()
-	testdb.EnsureMigrated(t, testDSN, auditmigrations.GetAuditMigrationScripts())
-	raw, err := sql.Open("postgres", testDSN)
+	pkg, err := auditdb.Package()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminDSN, runtimeDSN := tenanttest.FreshTenant(t, "tenant_audit_test", pkg)
+	raw, err := sql.Open("postgres", adminDSN)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = raw.Close() })
-	if _, err := raw.Exec(`TRUNCATE entity_audit_logs, entity_changes, audits RESTART IDENTITY`); err != nil {
+	raw.SetMaxOpenConns(1) // một session duy nhất giữ search_path cho các câu giả mạo trong test
+	if _, err := raw.Exec(`SET search_path TO biz_audit`); err != nil {
 		t.Fatal(err)
 	}
 
-	repo := storage.NewPostgresAuditRepo()
-	t.Cleanup(func() { _ = repo.Close() })
-	ctx := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{TenantID: "tenant-test", ConnectionString: testdb.RuntimeDSN(testDSN)})
+	dbm := tenantdb.NewManager("biz_audit")
+	t.Cleanup(func() { _ = dbm.Close(context.Background()) })
+	repo := storage.NewPostgresAuditRepo(dbm)
+	ctx := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{TenantID: "tenant-test", ConnectionString: runtimeDSN})
 
 	now := time.Now()
 	actor := audit.Actor{ID: "USR-1", Username: "admin", Role: "TENANT_ADMIN"}

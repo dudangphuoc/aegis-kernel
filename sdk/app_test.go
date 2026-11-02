@@ -5,17 +5,17 @@ import (
 	"testing"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
 )
 
 // Execute chỉ gắn ngữ cảnh request; việc ghi nhận thay đổi thuộc về trigger ở tầng DB
 func TestExecuteAttachesAuditRequestContext(t *testing.T) {
 	app := NewModuleApp(contract.ModuleDescriptor{Name: "demo"})
-	var got *dbaudit.RequestContext
+	var got *tenantdb.RequestContext
 	app.RegisterRoute(contract.RouteDefinition{Method: "POST", Path: "/users"},
 		func(ctx context.Context, _ contract.InvocationRequest) (contract.InvocationResponse, error) {
-			dbaudit.SetAction(ctx, "CREATE_USER")
-			got = dbaudit.FromContext(ctx)
+			tenantdb.SetAction(ctx, "CREATE_USER")
+			got = tenantdb.FromContext(ctx)
 			return JSONResponse(201, nil)
 		})
 
@@ -41,7 +41,7 @@ func TestExecuteAttachesAuditRequestContext(t *testing.T) {
 	// Request không có JWT -> ANONYMOUS
 	app.RegisterRoute(contract.RouteDefinition{Method: "GET", Path: "/anon"},
 		func(ctx context.Context, _ contract.InvocationRequest) (contract.InvocationResponse, error) {
-			got = dbaudit.FromContext(ctx)
+			got = tenantdb.FromContext(ctx)
 			return JSONResponse(200, nil)
 		})
 	_, _ = app.Execute(context.Background(), contract.InvocationRequest{Method: "GET", Path: "/anon"})

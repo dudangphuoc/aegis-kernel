@@ -8,47 +8,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/lib/pq"
 
 	"github.com/dudangphuoc/aegis-kernel/modules/audit/internal/domain"
 	"github.com/dudangphuoc/aegis-kernel/modules/audit/internal/ledger"
 	"github.com/dudangphuoc/aegis-kernel/sdk/audit"
-	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
 )
 
 // Khóa advisory theo transaction (an toàn với PgBouncer transaction pooling) để tuần tự hóa hash chain
 const chainLockSQL = `SELECT pg_advisory_xact_lock(hashtext('aegis_audit_chain'))`
 
+// PostgresAuditRepo ghi sổ kiểm toán vào schema biz_audit của DB tenant (bảng cục bộ: không capture, không đồng bộ)
 type PostgresAuditRepo struct {
-	connManager *multitenant.ConnectionManager[*sql.DB]
+	dbm *tenantdb.Manager
 }
 
-func NewPostgresAuditRepo() *PostgresAuditRepo {
-	cm := multitenant.NewConnectionManager[*sql.DB](func(tenantID, connStr string) (*sql.DB, error) {
-		db, err := sql.Open("postgres", connStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open postgres connection for %s: %w", tenantID, err)
-		}
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(2)
-		db.SetConnMaxLifetime(time.Hour)
-		// Schema do Control Plane Migrator quản lý (provision / Migrations tab), không migrate trong request path
-		return db, nil
-	})
-	return &PostgresAuditRepo{connManager: cm}
-}
-
-// Close đóng toàn bộ DB pool của mọi Tenant (gọi khi module Shutdown)
-func (r *PostgresAuditRepo) Close() error {
-	return r.connManager.CloseAll()
+func NewPostgresAuditRepo(dbm *tenantdb.Manager) *PostgresAuditRepo {
+	return &PostgresAuditRepo{dbm: dbm}
 }
 
 // Ingest ghi 1 Envelope vào 3 layer trong 1 transaction và nối tiếp hash chain.
 // Idempotent theo envelope ID: giao lại cùng envelope (at-least-once) không tạo bản ghi trùng.
 func (r *PostgresAuditRepo) Ingest(ctx context.Context, env audit.Envelope) error {
-	db, tenant, err := r.connManager.Resolve(ctx)
+	db, tenant, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return err
 	}
@@ -61,90 +45,94 @@ func (r *PostgresAuditRepo) Ingest(ctx context.Context, env audit.Envelope) erro
 		return err
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return db.Write(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, chainLockSQL); err != nil {
+			return fmt.Errorf("acquire audit chain lock: %w", err)
+		}
 
-	if _, err := tx.ExecContext(ctx, chainLockSQL); err != nil {
-		return fmt.Errorf("acquire audit chain lock: %w", err)
-	}
-
-	res, err := tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 		INSERT INTO audits (id, tenant_id, request_id, actor_id, actor_username, actor_role, actor_security_level,
 			client_ip, user_agent, client_info, source_module, action_method, action_path, action_name, status_code,
 			security_events, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (id) DO NOTHING`,
-		rec.ID, rec.TenantID, rec.RequestID, rec.ActorID, rec.ActorUsername, rec.ActorRole, rec.ActorSecurityLevel,
-		rec.ClientIP, rec.UserAgent, clientInfoParam(rec.ClientInfo), rec.SourceModule, rec.ActionMethod, rec.ActionPath, rec.ActionName, rec.StatusCode,
-		string(rec.SecurityEvents), rec.OccurredAt)
-	if err != nil {
-		return fmt.Errorf("insert audit: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil // đã ingest trước đó
-	}
+			rec.ID, rec.TenantID, rec.RequestID, rec.ActorID, rec.ActorUsername, rec.ActorRole, rec.ActorSecurityLevel,
+			rec.ClientIP, rec.UserAgent, clientInfoParam(rec.ClientInfo), rec.SourceModule, rec.ActionMethod, rec.ActionPath, rec.ActionName, rec.StatusCode,
+			string(rec.SecurityEvents), rec.OccurredAt)
+		if err != nil {
+			return fmt.Errorf("insert audit: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil // đã ingest trước đó
+		}
 
-	prev := ledger.GenesisHash
-	if err := tx.QueryRowContext(ctx, `SELECT integrity_hash FROM entity_audit_logs ORDER BY seq DESC LIMIT 1`).Scan(&prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read chain head: %w", err)
-	}
+		prev := ledger.GenesisHash
+		if err := tx.QueryRowContext(ctx, `SELECT integrity_hash FROM entity_audit_logs ORDER BY seq DESC LIMIT 1`).Scan(&prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read chain head: %w", err)
+		}
 
-	auditDigest := ledger.AuditDigest(rec)
-	appendLog := func(changeID *string, changeDigest string, field, oldV, newV *string) error {
-		hash := ledger.ChainHash(prev, rec.TenantID, rec.ID, auditDigest, changeID, changeDigest, field, oldV, newV)
-		_, err := tx.ExecContext(ctx, `
+		auditDigest := ledger.AuditDigest(rec)
+		appendLog := func(changeID *string, changeDigest string, field, oldV, newV *string) error {
+			hash := ledger.ChainHash(prev, rec.TenantID, rec.ID, auditDigest, changeID, changeDigest, field, oldV, newV)
+			_, err := tx.ExecContext(ctx, `
 			INSERT INTO entity_audit_logs (id, entity_change_id, audit_id, tenant_id, field_name, old_value, new_value, prev_hash, integrity_hash)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			newID("LOG"), changeID, rec.ID, rec.TenantID, field, oldV, newV, prev, hash)
-		if err != nil {
-			return fmt.Errorf("insert field log: %w", err)
+				newID("LOG"), changeID, rec.ID, rec.TenantID, field, oldV, newV, prev, hash)
+			if err != nil {
+				return fmt.Errorf("insert field log: %w", err)
+			}
+			prev = hash
+			return nil
 		}
-		prev = hash
-		return nil
-	}
 
-	logged := 0
-	for _, c := range changes {
-		if _, err := tx.ExecContext(ctx, `
+		logged := 0
+		for _, c := range changes {
+			if _, err := tx.ExecContext(ctx, `
 			INSERT INTO entity_changes (id, audit_id, tenant_id, table_name, entity_name, entity_id, operation, before_snapshot, after_snapshot, changed_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-			c.ID, c.AuditID, rec.TenantID, c.TableName, c.EntityName, c.EntityID, c.Operation, nullJSON(c.Before), nullJSON(c.After), c.ChangedAt); err != nil {
-			return fmt.Errorf("insert entity change: %w", err)
-		}
-		diffs, err := ledger.Diff(c.Before, c.After)
-		if err != nil {
-			return err
-		}
-		changeID, changeDigest := c.ID, ledger.ChangeDigest(c)
-		for _, d := range diffs {
-			field := d.Field
-			if err := appendLog(&changeID, changeDigest, &field, d.Old, d.New); err != nil {
+				c.ID, c.AuditID, rec.TenantID, c.TableName, c.EntityName, c.EntityID, c.Operation, nullJSON(c.Before), nullJSON(c.After), c.ChangedAt); err != nil {
+				return fmt.Errorf("insert entity change: %w", err)
+			}
+			diffs, err := ledger.Diff(c.Before, c.After)
+			if err != nil {
 				return err
 			}
-			logged++
+			changeID, changeDigest := c.ID, ledger.ChangeDigest(c)
+			for _, d := range diffs {
+				field := d.Field
+				if err := appendLog(&changeID, changeDigest, &field, d.Old, d.New); err != nil {
+					return err
+				}
+				logged++
+			}
 		}
-	}
-	// Audit không có diff (sự kiện bảo mật, UPDATE không đổi gì) vẫn được niêm phong vào chuỗi
-	if logged == 0 {
-		if err := appendLog(nil, "", nil, nil, nil); err != nil {
-			return err
+		// Audit không có diff (sự kiện bảo mật, UPDATE không đổi gì) vẫn được niêm phong vào chuỗi
+		if logged == 0 {
+			if err := appendLog(nil, "", nil, nil, nil); err != nil {
+				return err
+			}
 		}
-	}
 
-	return tx.Commit()
+		return nil
+	})
 }
 
 // List trả về các audit mới nhất kèm Layer 2 và Layer 3
 func (r *PostgresAuditRepo) List(ctx context.Context, limit int) ([]domain.AuditView, error) {
-	db, _, err := r.connManager.Resolve(ctx)
+	db, _, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var views []domain.AuditView
+	err = db.Read(ctx, func(tx *sql.Tx) error {
+		views, err = list(ctx, tx, limit)
+		return err
+	})
+	return views, err
+}
 
-	rows, err := db.QueryContext(ctx, `SELECT `+auditColumns+` FROM audits a ORDER BY a.occurred_at DESC, a.id LIMIT $1`, limit)
+func list(ctx context.Context, tx *sql.Tx, limit int) ([]domain.AuditView, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+auditColumns+` FROM audits a ORDER BY a.occurred_at DESC, a.id LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +154,7 @@ func (r *PostgresAuditRepo) List(ctx context.Context, limit int) ([]domain.Audit
 		return views, err
 	}
 
-	crows, err := db.QueryContext(ctx, `SELECT `+changeColumns+` FROM entity_changes c WHERE c.audit_id = ANY($1) ORDER BY c.changed_at, c.id`, pq.Array(ids))
+	crows, err := tx.QueryContext(ctx, `SELECT `+changeColumns+` FROM entity_changes c WHERE c.audit_id = ANY($1) ORDER BY c.changed_at, c.id`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +172,7 @@ func (r *PostgresAuditRepo) List(ctx context.Context, limit int) ([]domain.Audit
 		return nil, err
 	}
 
-	lrows, err := db.QueryContext(ctx, `SELECT `+logColumns+` FROM entity_audit_logs l WHERE l.audit_id = ANY($1) ORDER BY l.seq`, pq.Array(ids))
+	lrows, err := tx.QueryContext(ctx, `SELECT `+logColumns+` FROM entity_audit_logs l WHERE l.audit_id = ANY($1) ORDER BY l.seq`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -204,12 +192,20 @@ func (r *PostgresAuditRepo) List(ctx context.Context, limit int) ([]domain.Audit
 // Phát hiện: sửa/xóa giữa chuỗi, sửa audits/entity_changes/entity_audit_logs.
 // Không phát hiện được việc cắt bỏ phần đuôi chuỗi (cần neo head_hash ra ngoài để chống).
 func (r *PostgresAuditRepo) VerifyIntegrity(ctx context.Context) (domain.IntegrityReport, error) {
-	db, tenant, err := r.connManager.Resolve(ctx)
+	db, tenant, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return domain.IntegrityReport{}, err
 	}
+	var report domain.IntegrityReport
+	err = db.Read(ctx, func(tx *sql.Tx) error {
+		report, err = verify(ctx, tx, tenant.TenantID)
+		return err
+	})
+	return report, err
+}
 
-	rows, err := db.QueryContext(ctx, `
+func verify(ctx context.Context, tx *sql.Tx, tenantID string) (domain.IntegrityReport, error) {
+	rows, err := tx.QueryContext(ctx, `
 		SELECT `+logColumns+`, `+auditColumns+`,
 			c.id IS NOT NULL, COALESCE(c.id,''), COALESCE(c.audit_id,''), COALESCE(c.table_name,''), COALESCE(c.entity_name,''),
 			COALESCE(c.entity_id,''), COALESCE(c.operation,''), c.before_snapshot, c.after_snapshot, COALESCE(c.changed_at, 'epoch'::timestamptz)
@@ -252,7 +248,7 @@ func (r *PostgresAuditRepo) VerifyIntegrity(ctx context.Context) (domain.Integri
 			return fail(l, "audit client_info is not valid JSON")
 		}
 
-		if l.TenantID != tenant.TenantID || a.TenantID != tenant.TenantID {
+		if l.TenantID != tenantID || a.TenantID != tenantID {
 			return fail(l, "record belongs to another tenant")
 		}
 		if l.PrevHash != prev {

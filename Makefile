@@ -1,4 +1,4 @@
-.PHONY: build-modules build-kernel run run-ui test test-pgbouncer clean docker-up docker-down
+.PHONY: build-modules build-kernel build-platform proto run run-ui test test-pgbouncer clean docker-up docker-down
 
 # 1. Khởi động hạ tầng PostgreSQL Cluster
 docker-up:
@@ -18,6 +18,15 @@ build-modules:
 build-kernel:
 	@mkdir -p bin
 	go build -o bin/kernel ./launcher
+
+# CLI nền tảng (platform db new|lint|plan|apply|explain)
+build-platform:
+	@mkdir -p bin
+	go build -o bin/platform ./cmd/platform
+
+# Sinh mã Go từ proto (cần buf, protoc-gen-go, protoc-gen-go-grpc trong PATH)
+proto:
+	cd framework/core/wire && buf lint && buf generate
 
 # 4. Chạy toàn bộ hệ thống Micro-Kernel Backend (Port 8080)
 run: build-modules

@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+// Hợp đồng hub runtime <-> tiến trình module (go-plugin gRPC).
+// Module là tiến trình con: hot reload = chạy bản mới song song, đổi route, drain bản cũ.
+package platform.module.v1;
+
+option go_package = "github.com/dudangphuoc/aegis-kernel/framework/core/wire/modulev1";
+
+service ModuleService {
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  rpc Start(StartRequest) returns (StartResponse);
+  // Áp cờ feature và settings nóng, không restart tiến trình
+  rpc ApplyConfig(ConfigSnapshot) returns (ApplyConfigResponse);
+  // HTTP qua stream: frame đầu mang header, các frame sau mang body
+  rpc Serve(stream HttpFrame) returns (stream HttpFrame);
+  rpc HandleEvent(EventDelivery) returns (EventResult);
+  rpc Call(CallRequest) returns (CallResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  // Ngừng nhận việc mới, chờ in-flight xong trong drain_timeout_ms
+  rpc Stop(StopRequest) returns (StopResponse);
+}
+
+// Broker phía hub mà module gọi ngược lại (ModuleClient, dịch vụ nền tảng)
+service HubBrokerService {
+  rpc Call(CallRequest) returns (CallResponse);
+}
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  string key = 1;
+  string version = 2;
+  // module | feature
+  string kind = 3;
+  string module = 4;
+  repeated Route routes = 5;
+  repeated string exports = 6;
+  repeated string subscribes = 7;
+  repeated string extension_points = 8;
+  repeated string implements = 9;
+}
+
+message Route {
+  string method = 1;
+  string path = 2;
+}
+
+message StartRequest {
+  string store_id = 1;
+  string schema = 2;
+  // DSN do hub cấp; SDK mở transaction kèm SET LOCAL search_path = schema
+  string database_url = 3;
+  uint32 broker_id = 4;
+  ConfigSnapshot config = 5;
+}
+
+message StartResponse {}
+
+message ConfigSnapshot {
+  string revision = 1;
+  map<string, bool> flags = 2;
+  bytes settings_json = 3;
+}
+
+message ApplyConfigResponse {}
+
+message HttpFrame {
+  // chỉ có ở frame đầu
+  HttpHead head = 1;
+  bytes body = 2;
+  bool eof = 3;
+}
+
+message HttpHead {
+  string method = 1;
+  string path = 2;
+  string query = 3;
+  map<string, string> headers = 4;
+  int32 status = 5;
+}
+
+message EventDelivery {
+  string event_id = 1;
+  string type = 2;
+  string publisher = 3;
+  uint64 seq = 4;
+  bytes payload = 5;
+}
+
+message EventResult {
+  bool retry = 1;
+  string error = 2;
+}
+
+message CallRequest {
+  string caller = 1;
+  string module = 2;
+  string method = 3;
+  bytes payload = 4;
+  repeated string call_chain = 5;
+}
+
+message CallResponse {
+  bytes payload = 1;
+  string error_code = 2;
+  string error = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string detail = 2;
+}
+
+message StopRequest {
+  int64 drain_timeout_ms = 1;
+}
+
+message StopResponse {
+  uint32 abandoned = 1;
+}

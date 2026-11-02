@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -12,6 +13,24 @@ type ModuleDescriptor struct {
 	Description string `json:"description"`
 	// Subscriptions là các topic sự kiện mà Module muốn Kernel Bus giao tới (qua HandleEvent)
 	Subscriptions []string `json:"subscriptions,omitempty"`
+	// AuditTables: chính sách audit cho bảng trong schema biz_<Name>; bảng không khai vẫn được audit đủ cột
+	AuditTables []AuditTable `json:"audit_tables,omitempty"`
+}
+
+// ErrTenantNotFound: tenant không (còn) đăng ký ở Control Plane — thành phần nền dừng theo dõi tenant đó
+var ErrTenantNotFound = errors.New("tenant not registered in control plane")
+
+// TopicAuditRecorded: Kernel (change feed) giao audit.Envelope dựng từ platform.changes tới module audit
+const TopicAuditRecorded = "audit.recorded"
+
+// AuditTable khai báo cách audit hiển thị một bảng của module: tên entity, khoá chính,
+// cột bỏ qua (hạ tầng) và cột bí mật (chỉ ghi "có đổi", không ghi giá trị)
+type AuditTable struct {
+	Table   string   `json:"table"`
+	Entity  string   `json:"entity"`
+	PK      string   `json:"pk"`
+	Ignore  []string `json:"ignore,omitempty"`
+	Secrets []string `json:"secrets,omitempty"`
 }
 
 // TenantModuleConfig cấu hình riêng của một Tenant cho một Module cụ thể

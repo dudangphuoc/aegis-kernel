@@ -1,4 +1,4 @@
-package dbaudit
+package tenantdb
 
 import (
 	"context"
@@ -9,6 +9,10 @@ import (
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
 	"github.com/dudangphuoc/aegis-kernel/sdk/audit"
 )
+
+// ContextSetting là biến cấu hình Postgres (set_config(..., true), chỉ sống trong transaction) mang ngữ cảnh
+// request; platform.capture và platform.record_event ghi nó cùng thay đổi.
+const ContextSetting = "aegis.ctx"
 
 // RequestContext là ngữ cảnh của request được gắn vào transaction để trigger ghi cùng thay đổi.
 // Nó không quyết định CÓ audit hay không — việc đó do trigger ở tầng DB đảm nhận.
@@ -72,8 +76,8 @@ func RequestContextFromInvocation(module string, req contract.InvocationRequest)
 	}
 }
 
-// storedContext là dạng JSON lưu trong aegis_audit_outbox.context
-type storedContext struct {
+// StoredContext là dạng JSON lưu trong cột context của platform.changes / platform.audit_events
+type StoredContext struct {
 	TenantID     string           `json:"tenant_id,omitempty"`
 	RequestID    string           `json:"request_id,omitempty"`
 	SourceModule string           `json:"source_module,omitempty"`
@@ -86,7 +90,7 @@ type storedContext struct {
 
 func (rc *RequestContext) marshal() (string, error) {
 	rc.mu.Lock()
-	sc := storedContext{
+	sc := StoredContext{
 		TenantID: rc.TenantID, RequestID: rc.RequestID, SourceModule: rc.SourceModule,
 		Method: rc.Method, Path: rc.Path, Action: rc.Action, Actor: rc.Actor, Client: rc.Client,
 	}

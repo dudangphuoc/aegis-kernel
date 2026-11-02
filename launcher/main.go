@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/core/bus"
+	"github.com/dudangphuoc/aegis-kernel/core/changefeed"
+	"github.com/dudangphuoc/aegis-kernel/core/contract"
 	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
 	"github.com/dudangphuoc/aegis-kernel/core/feature"
 	"github.com/dudangphuoc/aegis-kernel/core/gateway"
@@ -43,9 +45,9 @@ func main() {
 		logger.Warn("PGBOUNCER_NODES not set; modules connect directly to PostgreSQL")
 	}
 
-	// Bổ sung database audit_<tenant_id> cho các Tenant cũ (idempotent)
-	if err := cpStore.EnsureAuditModuleForAllTenants(context.Background()); err != nil {
-		logger.Warn("failed to provision audit database for some tenants", slog.Any("error", err))
+	// DB tenant_<id> (schema mỗi module): áp script còn thiếu, chuyển tenant cũ sang mô hình mới (idempotent)
+	if err := cpStore.EnsureTenantDatabases(context.Background()); err != nil {
+		logger.Warn("failed to prepare database for some tenants", slog.Any("error", err))
 	}
 
 	// JWT secret dùng chung Gateway (verify) và module auth (sign) — module kế thừa qua env
@@ -88,6 +90,20 @@ func main() {
 	eventBus := bus.New(busNodes, cpStore, bus.Config{}, logger)
 	eventBus.Start()
 
+	// 3c. Change feed: platform.changes / audit_events của mỗi tenant -> audit.Envelope -> module audit
+	var feed *changefeed.Feed
+	if eventBus.HasSubscriber(contract.TopicAuditRecorded) {
+		feed = changefeed.New(cpStore, eventBus, logger.With(slog.String("component", "changefeed")))
+		policies := make(map[string][]contract.AuditTable)
+		for _, m := range moduleManager.GetLoadedModules() {
+			policies[m.Descriptor.Name] = m.Descriptor.AuditTables
+		}
+		feed.SetPolicies(policies)
+		feed.Start()
+	} else {
+		logger.Warn("no module subscribes to audit.recorded; change feed disabled")
+	}
+
 	// 4. Khởi tạo API Gateway (tích hợp API Control Plane /api/cp/*)
 	apiGateway := gateway.NewAPIGateway(moduleManager, featureManager, cpStore, cpHandler, jwtSecret, logger)
 
@@ -98,6 +114,10 @@ func main() {
 		os.Exit(1)
 	}
 	apiGateway.SetTrustedProxies(trusted)
+	if feed != nil {
+		// Request vừa chạy có thể đã ghi: đọc feed của tenant ngay thay vì chờ lượt quét
+		apiGateway.OnTenantRequest(feed.MarkDirty)
+	}
 
 	httpPort := os.Getenv("PORT")
 	if httpPort == "" {
@@ -127,9 +147,15 @@ func main() {
 
 	_ = server.Shutdown(shutdownCtx)
 
-	// Xả hết sự kiện còn trong outbox (VD: audit của request cuối) trước khi tắt module
+	// Xả hết sự kiện còn trong outbox (VD: audit của request cuối) trước khi tắt module.
+	// Feed dừng trước Bus: giao nốt thay đổi đã commit khi module audit vẫn còn chạy.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer drainCancel()
+	if feed != nil {
+		if err := feed.Stop(drainCtx); err != nil {
+			logger.Warn("change feed stop incomplete", slog.Any("error", err))
+		}
+	}
 	if err := eventBus.Drain(drainCtx); err != nil {
 		logger.Warn("event bus drain incomplete", slog.Any("error", err))
 	}

@@ -14,8 +14,8 @@ import (
 	ekycverification "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/ekyc_verification"
 	employeedirectory "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/employee_directory"
 	"github.com/dudangphuoc/aegis-kernel/sdk"
-	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
+	"github.com/dudangphuoc/aegis-kernel/sdk/tenantdb"
 )
 
 func main() {
@@ -23,6 +23,9 @@ func main() {
 		Name:        "parties",
 		Version:     "1.0.0",
 		Description: "Module quản lý đối tác (Employee, Customer, Identity CMND/CCCD)",
+		AuditTables: []contract.AuditTable{
+			{Table: "parties", Entity: "Party", PK: "id", Ignore: []string{"store_id", "processed_by"}},
+		},
 	})
 
 	// 1. Dependency Injection - PostgreSQL Repository
@@ -49,7 +52,7 @@ func main() {
 		RequireAuth:    true,
 		OptionalTenant: false,
 	}, func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error) {
-		dbaudit.SetAction(ctx, "REGISTER_PARTY")
+		tenantdb.SetAction(ctx, "REGISTER_PARTY")
 		var cmd command.RegisterPartyCommand
 		if err := json.Unmarshal(req.Body, &cmd); err != nil {
 			return sdk.JSONResponse(http.StatusBadRequest, map[string]string{"error": "invalid json body"})

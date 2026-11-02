@@ -6,7 +6,7 @@
 
 ## ✨ Key Features
 
-- **Dynamic tenant provisioning:** no static config. Registering a tenant creates its databases (`auth_<tenant_id>`, `parties_<tenant_id>`, `audit_<tenant_id>`), runs migrations, and seeds its first admin.
+- **Dynamic tenant provisioning:** no static config. Registering a tenant creates one database `tenant_<tenant_id>` with a schema per module (`platform`, `biz_auth`, `biz_parties`, `biz_audit`), applies the add-only scripts (`db/`, `modules/<m>/db/`), binds it to the tenant's root store and seeds its first admin. Every write is captured by triggers into `platform.changes`; the kernel change feed turns it into audit records.
 - **CQRS + feature overrides:** base logic lives in `internal/business`, per-tenant variants in `internal/features` and are toggled at runtime (e.g. standard login vs. MFA).
 - **HTTP gateway (`go-chi/chi`):** standard `net/http`, with middleware for request ID, real IP, recovery, CORS, tenant detection and feature guard.
 - **Migration engine:** per-tenant Up/Down (canary) or batch migrate, safe via `pg_advisory_lock` and transactions.
@@ -46,7 +46,7 @@ flowchart TD
 ```text
 core/        contract, controlplane, feature, gateway, loader, transport
 launcher/    kernel entry point (main.go)
-sdk/         cqrs, migrator, multitenant, app.go (standalone debug)
+sdk/         cqrs, tenantdb (DB of the tenant, schema per module), multitenant, app.go (standalone debug)
 modules/     auth, parties, audit
 web/         React 19 + TypeScript + Vite dashboard
 cookbooks/   design docs

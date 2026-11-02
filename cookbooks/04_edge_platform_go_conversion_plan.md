@@ -131,6 +131,36 @@ flowchart LR
 
 ---
 
+### 2.1. Chẩn đoán `core/` (rà soát 2026-11-02, sau Bước 1)
+
+`core` hiện là **một tiến trình kiêm hai vai**: Control Plane (cloud) và runtime chạy module (hub). Kiến trúc đích tách hai vai này:
+- phần hub (`loader`, `transport`, `bus`, routing, `changefeed`) → `framework/hub/*`, binary `cmd/xhub`;
+- phần cloud (`controlplane`) → `framework/cloud/controlplane`, binary `cmd/cloudapi`.
+
+Khoảng 1/3 code giữ được nguyên hoặc gần nguyên; phần còn lại là khung "nạp module một lần lúc khởi động", phải viết lại để có hot reload, OTA và manifest.
+
+| Package | Dòng | Kết luận | Lý do | Làm ở |
+|---|---|---|---|---|
+| `changefeed` | 668 | **Giữ** | Đúng mô hình đích. Chuyển sang `framework/hub/sync`, thêm consumer `@cloud`. | Bước 4 |
+| `gateway`: `auth.go`, `callchain.go`, `clientip.go` | ~300 | **Giữ, tách ra** | Kiểm JWT, chặn gọi vòng (508), IP qua proxy tin cậy: độc lập, có test. Thành middleware dùng chung cho HTTP mặt LAN của hub và Gateway cloud. | Bước 3, 7 |
+| `bus` | 482 | **Giữ giao/retry/cycle guard, bỏ phần poll** | `deliver` (retry, backoff) và cycle guard dùng lại cho dispatcher. Outbox hiện **nằm trong bộ nhớ** module (`sdk/outbox.go`): module crash là mất sự kiện. Chuyển sang `<schema>.outbox` trong DB (có từ Bước 1) + dispatcher đọc theo cursor. | Bước 3 |
+| `contract` | 148 | **Sửa nhiều, giữ khái niệm** | Giữ header, `AuditTable`, `Event`. Bỏ: `MicroModule` qua net/rpc; `InvocationRequest` (body đọc trọn vào bộ nhớ; query `map[string]string` mất giá trị lặp); `ModuleInitConfig.Tenants` (gửi DSN có mật khẩu của mọi tenant cho mọi module); `TenantRequestContext.ConnectionString` theo từng request. Thay bằng `module.proto`. | Bước 3 |
+| `transport` | 163 | **Thay** | net/rpc: `Execute`, `Initialize`, `GetRoutes` bỏ qua `ctx` (không huỷ/timeout được), chỉ chạy khi hub và module cùng version. Thay bằng go-plugin gRPC. | Bước 3 |
+| `loader` | 195 | **Viết lại thành Supervisor** | Quét `bin/modules` một lần lúc khởi động; không version, không kiểm chữ ký; không theo dõi tiến trình (module crash vẫn nằm trong bảng, request tới nó lỗi mãi); không thay được khi đang chạy; `Environment: "production"` cứng. | Bước 3 |
+| `gateway`: routing (`Handler()`) | ~400 | **Viết lại** | Route gắn vào chi **một lần** nên không hot reload được. Mỗi request 2–4 truy vấn tới `cp_db` (resolve tenant, lặp lại cho cờ feature); hub ở cửa hàng không có `cp_db`. Thay bằng bảng route trong `atomic.Pointer` + cờ từ manifest trong bộ nhớ. | Bước 3 |
+| `feature` | 27 | **Bỏ** | Bọc quanh `ResolveTenantRequestContext`, mỗi lần kiểm là một truy vấn DB. Thay bằng `FeatureSnapshot` từ manifest. | Bước 3 |
+| `controlplane` | 1 290 | **Tách đôi, phần lớn viết lại** | Xem bên dưới. | Bước 2, 5 |
+
+**`controlplane`**, vấn đề lớn nhất:
+1. **Hai schema master song song.** `initSchema` tự tạo `cp_users`, `cp_sessions`, `cp_tenants`, `cp_tenant_modules`, trong khi `db/master` đã có `operator`, `tenant`, `store`, `credential`, `release`, `feature_flag`, `audit`. Phải bỏ bộ `cp_*` để không có hai nguồn dữ liệu.
+2. **Trộn vai trò trong một `Store`**: đăng nhập operator (token session trong DB, `SUPER_ADMIN` cứng), danh bạ tenant, tạo/xoá DB, pooler, migration. Tách Domain / Application / Infrastructure.
+3. **Import trực tiếp `modules/*/db`** để lấy script: vi phạm ranh giới framework–nghiệp vụ, hiện chưa bị gate bắt (gate chỉ kiểm `framework`, `db`, `cmd`).
+4. **Seed cứng**: `admin/admin123`, mã MFA `654321`, cờ `enable_global_audit`.
+
+Giữ: `pooler.go` (chọn node PgBouncer theo hash tenant, DSN admin/runtime, có test), `tenant_database.go` (provision của Bước 1), bộ endpoint `/api/cp/*` làm khung tham khảo cho REST API mới.
+
+Trong lúc chuyển, `core` và `launcher` vẫn chạy như hiện tại: thay từng phần, không phá hệ thống đang có.
+
 ## 3. Kiến trúc đích (Go)
 
 ### 3.1. Cấu trúc repo
@@ -397,25 +427,27 @@ Hướng nâng cấp so với ref: ref chỉ polling. Bản Go thêm **SSE** `/a
 ## 6. Lộ trình (mỗi bước chạy được và kiểm được)
 
 ### Bước 0 — Khung và nền tảng dùng chung
-- [ ] `go.work`, cấu trúc thư mục §3.1, gate phụ thuộc (`framework` không import `modules`).
-- [ ] `framework/core/wire`: proto `hub.v1`, `gateway.v1`, `module.v1`; sinh code bằng `buf`.
-- [ ] `framework/core/security`: hub token `phub1.`, envelope HMAC/AES-GCM, HKDF device/gateway key, secretbox KEK, ed25519.
-- [ ] `framework/core/data`: ScriptRunner + ledger + lint DBxxx + `platform db new|lint|plan|apply`.
-- [ ] `db/platform` (provision_schema, track_schema, capture, outbox/inbox), `db/master`.
+- [x] Cấu trúc `framework/`, `cmd/`, `db/` (§3.1) + gate phụ thuộc (`framework/depgate_test.go`). `go.work` tách `sdk` thành module riêng để ở Bước 2, khi SDK mới thay `sdk/` hiện tại.
+- [x] `framework/core/wire`: proto `hub.v1`, `gateway.v1`, `module.v1`; sinh code bằng `buf`.
+- [x] `framework/core/security`: hub token `phub1.`, envelope HMAC/AES-GCM, HKDF device/gateway key, secretbox KEK, ed25519.
+- [x] `framework/core/data`: ScriptRunner + ledger + lint DBxxx + `platform db new|lint|plan|apply`.
+- [x] `db/platform` (provision_schema, track_schema, capture, outbox/inbox, cursors), `db/master` (operator, tenancy, hub, package, release, feature_flag, audit); nhúng qua package `db`.
 
 ### Bước 1 — Dữ liệu theo schema
-- [ ] Bỏ mô hình DB riêng mỗi module: tenant DB gồm `platform` + `biz_*`; không role theo schema, một login app + một login migrator; SDK `SET LOCAL search_path`.
-- [ ] Viết lại migrations của `identity`, `parties`, `audit` thành `db/*.sql` theo lint.
-- [ ] Change capture `platform.changes` thay relay `dbaudit`; test qua PgBouncer.
+- [x] Bỏ mô hình DB riêng mỗi module: DB `tenant_<id>` gồm `platform` + `biz_auth|biz_parties|biz_audit`, gắn store gốc (`platform.bind_store`); không role theo schema. SDK `sdk/tenantdb`: `Read/Write` mở transaction bằng `set_config('search_path', ..., true)`.
+- [x] Viết lại migrations của `auth`, `parties`, `audit` thành `modules/<m>/db/*.sql` theo lint (bỏ dữ liệu seed: script cấm DML vào bảng đồng bộ; admin do Control Plane tạo khi provision). Đổi tên `auth` → `identity` để sang Bước 2 cùng lúc đóng gói.
+- [x] Change capture `platform.changes` (+ `old_json`) và `platform.audit_events` dùng chung dãy seq theo thứ tự commit; **change feed trong Kernel** (`core/changefeed`) thay relay `dbaudit` trong từng module: gom theo transaction → `audit.Envelope`, che cột bí mật theo `AuditTables` của descriptor, cursor `@audit` trong `platform.dispatch_cursors`, dọn dòng đã giao. Test trực tiếp và qua PgBouncer; E2E trên kernel thật.
 
 ### Bước 2 — Đóng gói
 - [ ] `platform.json` + trường sinh, `platform pack` (build đa kiến trúc, zip tất định, verify, ký), `platform push` (S3 ghi một lần).
 - [ ] SDK: `Module`, `Feature`, `ExtensionPoint`, `ReadDB/WriteDB` (UoW + outbox), `ModuleClient`, `ModuleEvents`, `ApplyConfig`.
+- [ ] Script module đi trong gói ⇒ gỡ import `modules/*` khỏi `core/controlplane`; mở rộng gate phụ thuộc cho cả `core/` (§2.1). Đổi tên `auth` → `identity`.
 
 ### Bước 3 — XHub runtime + hot reload
 - [ ] Supervisor (channel giữ manifest mới nhất), process host go-plugin gRPC, route table `atomic.Pointer`, blue/green + drain.
 - [ ] Outbox dispatcher / inbox / dead-letter / module RPC broker (uses/export).
 - [ ] Feature snapshot + `ApplyConfig` nóng; `platform dev watch`.
+- [ ] Thay `core/loader`, `core/transport`, `core/feature`, routing của `core/gateway` (§2.1). Chuyển `changefeed`, middleware JWT/call-chain/IP tin cậy và phần giao/retry của `core/bus` sang `framework/hub`; bỏ outbox trong bộ nhớ của SDK.
 - [ ] Test: thay gói khi đang chịu tải 200 rps ⇒ **0 lỗi 5xx, 0 lỗi 404**; đổi cờ áp dưới 100 ms.
 
 ### Bước 4 — Liên kết hub ↔ cloud
@@ -427,6 +459,7 @@ Hướng nâng cấp so với ref: ref chỉ polling. Bản Go thêm **SSE** `/a
 - [ ] Tenant provisioning, store, credential (rotate/revoke/primary), package registry, release planner/runner/lease/rollback, flag (revision), manifest builder, rollout.
 - [ ] Ingest (ChangeApplier, cursor, pending/blocked, ack), Report (event_log, projection, retention).
 - [ ] Mode `single|split` + internal API + service token.
+- [ ] Thay `core/controlplane` (bỏ bảng `cp_*`, chạy trên `db/master`); giữ `pooler.go` và logic provision (§2.1).
 
 ### Bước 6 — OTA runtime
 - [ ] `xhub-launcher` (versions, probation 90 s, bad/retry, RuntimeRetry), Updater áp script trước khi chuyển.

@@ -12,12 +12,11 @@ import (
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
-	"github.com/dudangphuoc/aegis-kernel/sdk/audit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
 // TopicAuditRecorded là topic Kernel Bus dùng để chuyển audit.Envelope tới module audit
-const TopicAuditRecorded = "audit.recorded"
+const TopicAuditRecorded = contract.TopicAuditRecorded
 
 // EventHandlerFunc xử lý sự kiện đã đăng ký; ctx đã mang Tenant Context của Module nhận
 type EventHandlerFunc func(ctx context.Context, ev contract.Event) error
@@ -121,12 +120,6 @@ func (app *ModuleApp) UseKernelBus() {
 	app.mu.Lock()
 	app.busEnabled = true
 	app.mu.Unlock()
-}
-
-// PublishAudit implement dbaudit.Publisher: Envelope từ outbox DB -> sự kiện audit.recorded
-func (app *ModuleApp) PublishAudit(ctx context.Context, tenantID, eventID string, env audit.Envelope) bool {
-	ok, err := app.publish(ctx, eventID, TopicAuditRecorded, tenantID, env)
-	return ok && err == nil
 }
 
 func appendHop(chain []string, module string) []string {

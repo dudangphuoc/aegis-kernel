@@ -9,7 +9,6 @@ import {
   CheckCircle2, 
   AlertCircle, 
   ArrowUpCircle, 
-  ArrowDownCircle, 
   PlusCircle, 
   Server,
   Terminal,
@@ -386,7 +385,8 @@ export default function App() {
   };
 
   // Chạy Migration Up/Down
-  const handleRunMigration = async (tenantId: string, moduleName: string, action: 'up' | 'down') => {
+  // Script chỉ thêm (add-only): không có rollback
+  const handleRunMigration = async (tenantId: string, moduleName: string, action: 'up') => {
     try {
       const res = await fetch(`${API_BASE}/api/cp/migrations/run`, {
         method: 'POST',
@@ -1731,27 +1731,6 @@ export default function App() {
                             >
                               <ArrowUpCircle size={13} />
                               <span>Up</span>
-                            </button>
-
-                            <button
-                              onClick={() => handleRunMigration(m.tenant_id, m.module_name, 'down')}
-                              disabled={m.current_version === 0}
-                              title="Rollback Down"
-                              style={{
-                                padding: '5px 10px',
-                                backgroundColor: m.current_version > 0 ? '#b91c1c' : '#374151',
-                                color: '#fff',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: m.current_version > 0 ? 'pointer' : 'not-allowed',
-                                fontSize: '11px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '4px'
-                              }}
-                            >
-                              <ArrowDownCircle size={13} />
-                              <span>Down</span>
                             </button>
                           </div>
                         </td>

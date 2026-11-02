@@ -4,153 +4,147 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
-	auditmigrations "github.com/dudangphuoc/aegis-kernel/modules/audit/migrations"
-	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
-	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
-	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
+	"github.com/dudangphuoc/aegis-kernel/framework/core/data/scripts"
 )
 
+// TenantMigrationStatus là trạng thái script của một package (platform / module) trên DB một tenant.
+// Giữ dạng JSON cũ cho dashboard; "version" là số thứ tự script trong package.
+type TenantMigrationStatus struct {
+	TenantID          string             `json:"tenant_id"`
+	ModuleName        string             `json:"module_name"`
+	Schema            string             `json:"schema"`
+	CurrentVersion    int                `json:"current_version"`
+	LatestVersion     int                `json:"latest_version"`
+	PendingCount      int                `json:"pending_count"`
+	Status            string             `json:"status"` // UP_TO_DATE, PENDING_MIGRATIONS, ERROR
+	AppliedMigrations []AppliedMigration `json:"applied_migrations"`
+	PendingMigrations []string           `json:"pending_migrations"`
+	ErrorMessage      string             `json:"error_message,omitempty"`
+}
+
+type AppliedMigration struct {
+	Version     int       `json:"version"`
+	Name        string    `json:"name"`
+	AppliedAt   time.Time `json:"applied_at"`
+	ExecutionMs int64     `json:"execution_ms"`
+}
+
+// MigrationService xem và áp script trên DB của tenant. Script chỉ thêm (add-only): không có rollback.
 type MigrationService struct {
-	store  *Store
-	runner *migrator.Runner
+	store *Store
 }
 
 func NewMigrationService(store *Store) *MigrationService {
-	return &MigrationService{
-		store:  store,
-		runner: migrator.NewRunner(),
-	}
+	return &MigrationService{store: store}
 }
 
-func (s *MigrationService) getScriptsForModule(moduleName string) []migrator.MigrationScript {
-	switch moduleName {
-	case "auth":
-		return authmigrations.GetAuthMigrationScripts()
-	case "parties":
-		return partiesmigrations.GetPartiesMigrationScripts()
-	case "audit":
-		return auditmigrations.GetAuditMigrationScripts()
-	default:
-		return nil
-	}
-}
-
-// GetAllTenantMigrationStatuses lấy trạng thái migration của tất cả (Tenant x Module)
-func (s *MigrationService) GetAllTenantMigrationStatuses(ctx context.Context) ([]migrator.TenantMigrationStatus, error) {
-	tenants, err := s.store.GetTenants(ctx)
+// GetAllTenantMigrationStatuses: trạng thái từng (tenant × package) trên DB tenant_<id>
+func (s *MigrationService) GetAllTenantMigrationStatuses(ctx context.Context) ([]TenantMigrationStatus, error) {
+	ids, err := s.store.TenantIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	var results []migrator.TenantMigrationStatus
-	for tenantID, t := range tenants {
-		for modName, m := range t.Modules {
-			scripts := s.getScriptsForModule(modName)
-			connStr := m.ConnectionString
-
-			db, err := sql.Open("postgres", connStr)
-			if err != nil {
-				results = append(results, migrator.TenantMigrationStatus{
-					TenantID:         tenantID,
-					ModuleName:       modName,
-					ConnectionString: connStr,
-					Status:           "ERROR",
-					ErrorMessage:     err.Error(),
-				})
-				continue
-			}
-
-			statusCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			status := s.runner.InspectStatus(statusCtx, db, tenantID, modName, connStr, scripts)
-			cancel()
-			_ = db.Close()
-
-			results = append(results, status)
-		}
+	pkgs, err := TenantPackages()
+	if err != nil {
+		return nil, err
 	}
-	return results, nil
+	var out []TenantMigrationStatus
+	for _, id := range ids {
+		out = append(out, s.tenantStatus(ctx, id, pkgs)...)
+	}
+	return out, nil
 }
 
-// RunMigrationForTenant chạy up hoặc down cho 1 Tenant x Module
+func (s *MigrationService) tenantStatus(ctx context.Context, tenantID string, pkgs []scripts.Package) []TenantMigrationStatus {
+	fail := func(err error) []TenantMigrationStatus {
+		out := make([]TenantMigrationStatus, len(pkgs))
+		for i, p := range pkgs {
+			out[i] = TenantMigrationStatus{TenantID: tenantID, ModuleName: p.Name, Schema: p.Schema, Status: "ERROR", ErrorMessage: err.Error()}
+		}
+		return out
+	}
+	conn, err := sql.Open("postgres", s.store.BuildAdminConnectionString(TenantDatabaseName(tenantID)))
+	if err != nil {
+		return fail(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	plans, err := (&scripts.Runner{DB: conn}).Plan(ctx, pkgs...)
+	if err != nil {
+		return fail(err)
+	}
+	appliedAt := map[string]time.Time{}
+	if rows, err := conn.QueryContext(ctx, `SELECT package || '/' || script, applied_at FROM platform.migrations`); err == nil {
+		for rows.Next() {
+			var k string
+			var at time.Time
+			if rows.Scan(&k, &at) == nil {
+				appliedAt[k] = at
+			}
+		}
+		rows.Close()
+	}
+
+	out := make([]TenantMigrationStatus, 0, len(plans))
+	for _, p := range plans {
+		st := TenantMigrationStatus{TenantID: tenantID, ModuleName: p.Package, Schema: p.Schema, Status: "UP_TO_DATE",
+			AppliedMigrations: []AppliedMigration{}, PendingMigrations: []string{}}
+		for i, sc := range p.Scripts {
+			switch sc.Status {
+			case scripts.StatusApplied, scripts.StatusAhead:
+				st.AppliedMigrations = append(st.AppliedMigrations, AppliedMigration{Version: i + 1, Name: sc.Script, AppliedAt: appliedAt[p.Package+"/"+sc.Script]})
+				st.CurrentVersion++
+			case scripts.StatusPending:
+				st.PendingMigrations = append(st.PendingMigrations, sc.Script)
+			case scripts.StatusEdited:
+				st.Status, st.ErrorMessage = "ERROR", fmt.Sprintf("%v: %s", scripts.ErrMigrationEdited, sc.Script)
+			}
+			if sc.Status != scripts.StatusAhead {
+				st.LatestVersion++
+			}
+		}
+		st.PendingCount = len(st.PendingMigrations)
+		if st.PendingCount > 0 && st.Status != "ERROR" {
+			st.Status = "PENDING_MIGRATIONS"
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// RunMigrationForTenant áp mọi script còn thiếu trên DB của tenant. Script dùng chung một DB nên
+// moduleName chỉ để báo lỗi; "down" bị từ chối vì script chỉ thêm (hạ version giữ nguyên schema).
 func (s *MigrationService) RunMigrationForTenant(ctx context.Context, tenantID, moduleName, action string) error {
-	// Migrator dùng DSN admin (:5432): pg_advisory_lock theo session không chạy được qua PgBouncer transaction mode
-	adminDSN, err := s.store.ResolveAdminConnectionString(ctx, tenantID, moduleName)
-	if err != nil {
-		return err
-	}
-
-	scripts := s.getScriptsForModule(moduleName)
-	if len(scripts) == 0 {
-		return fmt.Errorf("no migration scripts registered for module '%s'", moduleName)
-	}
-
-	db, err := sql.Open("postgres", adminDSN)
-	if err != nil {
-		return fmt.Errorf("failed to connect to db for tenant '%s': %w", tenantID, err)
-	}
-	defer db.Close()
-
 	switch action {
 	case "up":
-		return s.runner.MigrateUp(ctx, db, scripts)
+		s.store.mu.Lock()
+		defer s.store.mu.Unlock()
+		_, err := s.store.ensureTenantDatabaseLocked(ctx, tenantID)
+		return err
 	case "down":
-		return s.runner.RollbackDown(ctx, db, scripts)
+		return fmt.Errorf("scripts are add-only: rollback of '%s' is not supported (release an older package version instead)", moduleName)
 	default:
-		return fmt.Errorf("invalid migration action '%s', must be 'up' or 'down'", action)
+		return fmt.Errorf("invalid migration action '%s', must be 'up'", action)
 	}
 }
 
-// BatchMigrateAllTenants nâng cấp tất cả tenants lên phiên bản mới nhất
+// BatchMigrateAllTenants áp script còn thiếu cho mọi tenant
 func (s *MigrationService) BatchMigrateAllTenants(ctx context.Context) (map[string]string, error) {
-	tenants, err := s.store.GetTenants(ctx)
+	ids, err := s.store.TenantIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	report := make(map[string]string)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for tID, t := range tenants {
-		for mName, m := range t.Modules {
-			tenantID := tID
-			moduleName := mName
-			connStr := m.ConnectionString
-			scripts := s.getScriptsForModule(moduleName)
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				key := fmt.Sprintf("%s:%s", tenantID, moduleName)
-				db, err := sql.Open("postgres", connStr)
-				if err != nil {
-					mu.Lock()
-					report[key] = fmt.Sprintf("FAILED: connect db error (%v)", err)
-					mu.Unlock()
-					return
-				}
-				defer db.Close()
-
-				mCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-
-				if err := s.runner.MigrateUp(mCtx, db, scripts); err != nil {
-					mu.Lock()
-					report[key] = fmt.Sprintf("FAILED: %v", err)
-					mu.Unlock()
-				} else {
-					mu.Lock()
-					report[key] = "SUCCESS: Up to date"
-					mu.Unlock()
-				}
-			}()
+	report := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if err := s.RunMigrationForTenant(ctx, id, "", "up"); err != nil {
+			report[id] = fmt.Sprintf("FAILED: %v", err)
+			continue
 		}
+		report[id] = "SUCCESS: Up to date"
 	}
-
-	wg.Wait()
 	return report, nil
 }
-

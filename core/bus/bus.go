@@ -5,6 +5,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -222,6 +223,32 @@ func (b *Bus) dispatch(ctx context.Context, ev contract.Event) {
 		}
 		b.delivered.Add(1)
 	}
+}
+
+// ErrNoSubscriber: topic không có module nào đăng ký
+var ErrNoSubscriber = errors.New("no subscriber for topic")
+
+// Publish giao ev tới mọi subscriber của topic ngay (đồng bộ, có retry), dành cho nguồn phát nằm trong Kernel
+// (VD: change feed). Lỗi nếu còn subscriber chưa nhận: nguồn phát giữ cursor và giao lại sau, nên
+// subscriber phải idempotent theo ev.ID.
+func (b *Bus) Publish(ctx context.Context, ev contract.Event) error {
+	targets := b.subs[ev.Topic]
+	if len(targets) == 0 {
+		b.unrouted.Add(1)
+		return fmt.Errorf("%w %q", ErrNoSubscriber, ev.Topic)
+	}
+	for _, target := range targets {
+		if err := b.deliver(ctx, target, ev); err != nil {
+			return fmt.Errorf("deliver %s to %s: %w", ev.ID, target, err)
+		}
+		b.delivered.Add(1)
+	}
+	return nil
+}
+
+// HasSubscriber cho biết topic có module nào nhận không
+func (b *Bus) HasSubscriber(topic string) bool {
+	return len(b.subs[topic]) > 0
 }
 
 func (b *Bus) deliver(ctx context.Context, target string, ev contract.Event) error {

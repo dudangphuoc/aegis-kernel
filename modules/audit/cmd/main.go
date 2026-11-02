@@ -26,11 +26,10 @@ func main() {
 		Description: "Module kiểm toán 3 tầng (Request, Entity Snapshot, Field Diff + SHA-256 Hash Chain)",
 	})
 
-	// 1. Dependency Injection - PostgreSQL Repository (audit_<tenant_id>)
-	auditRepo := storage.NewPostgresAuditRepo()
-	app.OnShutdown(func(context.Context) error { return auditRepo.Close() })
+	// 1. Dependency Injection - PostgreSQL Repository (schema biz_audit trong DB tenant)
+	auditRepo := storage.NewPostgresAuditRepo(app.UseTenantDatabase())
 
-	// Nhận audit.Envelope từ mọi module qua Kernel Event Bus (không mở qua HTTP).
+	// Nhận audit.Envelope do Kernel dựng từ platform.changes, qua Kernel Event Bus (không mở qua HTTP).
 	// Ingest idempotent theo envelope ID nên an toàn với giao lại (at-least-once).
 	app.Subscribe(sdk.TopicAuditRecorded, func(ctx context.Context, ev contract.Event) error {
 		var env audit.Envelope

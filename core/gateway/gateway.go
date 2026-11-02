@@ -9,12 +9,12 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
 	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
 	"github.com/dudangphuoc/aegis-kernel/core/feature"
 	"github.com/dudangphuoc/aegis-kernel/core/loader"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 type APIGateway struct {
@@ -26,6 +26,13 @@ type APIGateway struct {
 	jwtSecret []byte
 	// trustedProxies: proxy được phép báo IP client qua X-Forwarded-For (xem clientip.go)
 	trustedProxies []netip.Prefix
+	// onTenantRequest: gọi sau mỗi request đã chạy vào module của một tenant (change feed đọc ngay)
+	onTenantRequest func(tenantID string)
+}
+
+// OnTenantRequest đăng ký hook chạy sau mỗi request tới module của một tenant. Gọi trước Handler().
+func (gw *APIGateway) OnTenantRequest(fn func(tenantID string)) {
+	gw.onTenantRequest = fn
 }
 
 func NewAPIGateway(m *loader.ModuleManager, fm *feature.FeatureManager, store *controlplane.Store, cpHandler *controlplane.APIHandler, jwtSecret []byte, logger *slog.Logger) *APIGateway {
@@ -166,6 +173,9 @@ func (gw *APIGateway) Handler() http.Handler {
 
 				// E. Gọi RPC sang process của module
 				resp, err := mod.Execute(req.Context(), invReq)
+				if tenantCtx.TenantID != "" && gw.onTenantRequest != nil {
+					gw.onTenantRequest(tenantCtx.TenantID)
+				}
 				if err != nil {
 					gw.logger.Error("module execution error", slog.Any("error", err))
 					writeJSON(w, http.StatusBadGateway, map[string]string{"error": "module RPC execution failed"})

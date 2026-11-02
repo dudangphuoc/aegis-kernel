@@ -61,12 +61,12 @@ func (r *recorder) count() int {
 // newApps dựng module "parties" phát audit và module "audit" nhận qua Bus, giống khi chạy dưới Kernel
 func newApps(rec *recorder) (*sdk.ModuleApp, *sdk.ModuleApp) {
 	producer := sdk.NewModuleApp(contract.ModuleDescriptor{Name: "parties"})
-	// Mô phỏng relay outbox DB của module: đẩy Envelope qua PublishAudit
+	// Module phát sự kiện qua outbox của SDK; Bus giao tới module audit
 	producer.RegisterRoute(contract.RouteDefinition{Method: "POST", Path: "/p"},
 		func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error) {
 			env := audit.Envelope{ID: "AUD-" + time.Now().Format("150405.000000000"), TenantID: req.Tenant.TenantID,
 				Changes: []audit.EntityChange{{TableName: "users", EntityID: "U1", Operation: audit.OpInsert}}}
-			producer.PublishAudit(ctx, req.Tenant.TenantID, "EVT-"+env.ID, env)
+			_, _ = producer.Publish(ctx, sdk.TopicAuditRecorded, req.Tenant.TenantID, env)
 			return sdk.JSONResponse(201, nil)
 		})
 	producer.UseKernelBus()
