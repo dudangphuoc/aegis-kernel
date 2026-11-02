@@ -6,7 +6,7 @@
 
 ## ✨ Key Features
 
-- **Dynamic tenant provisioning:** no static config. Registering a tenant creates its databases (`auth_<tenant_id>`, `parties_<tenant_id>`), runs migrations, and seeds its first admin.
+- **Dynamic tenant provisioning:** no static config. Registering a tenant creates its databases (`auth_<tenant_id>`, `parties_<tenant_id>`, `audit_<tenant_id>`), runs migrations, and seeds its first admin.
 - **CQRS + feature overrides:** base logic lives in `internal/business`, per-tenant variants in `internal/features` and are toggled at runtime (e.g. standard login vs. MFA).
 - **HTTP gateway (`go-chi/chi`):** standard `net/http`, with middleware for request ID, real IP, recovery, CORS, tenant detection and feature guard.
 - **Migration engine:** per-tenant Up/Down (canary) or batch migrate, safe via `pg_advisory_lock` and transactions.
@@ -33,10 +33,12 @@ flowchart TD
 
     GW -- "go-plugin RPC" --> ModAuth["Module: auth"]
     GW -- "go-plugin RPC" --> ModParties["Module: parties"]
+    GW -- "go-plugin RPC" --> ModAudit["Module: audit"]
 
     CPStore --> DB_CP[("cp_db")]
     ModAuth --> DB_Auth[("auth_{tenant_id}")]
     ModParties --> DB_Party[("parties_{tenant_id}")]
+    ModAudit --> DB_Audit[("audit_{tenant_id}")]
 ```
 
 ## 📂 Structure
@@ -45,7 +47,7 @@ flowchart TD
 core/        contract, controlplane, feature, gateway, loader, transport
 launcher/    kernel entry point (main.go)
 sdk/         cqrs, migrator, multitenant, app.go (standalone debug)
-modules/     auth, parties
+modules/     auth, parties, audit
 web/         React 19 + TypeScript + Vite dashboard
 cookbooks/   design docs
 scripts/     PostgreSQL init
@@ -54,12 +56,14 @@ scripts/     PostgreSQL init
 ## ⚡ Quickstart
 
 ```bash
-make docker-up          # PostgreSQL on :5432 (cp_db)
-make run                # build modules + start kernel on :8080
+make docker-up          # PostgreSQL :5432 (cp_db) + PgBouncer nodes :6432, :6433
+PGBOUNCER_NODES=localhost:6432,localhost:6433 AEGIS_JWT_SECRET=<32+ chars> make run   # kernel on :8080
 cd web && npm install && make run-ui   # dashboard on :5173
 ```
 
 Default login: `admin` / `admin123`.
+
+Optional kernel env: `TRUSTED_PROXIES` (CIDR/IP list, e.g. `10.0.0.0/8`) — only these peers may set `X-Forwarded-For`/`X-Real-IP`; by default the audited client IP is the TCP peer.
 
 ## 🔄 Adding a Migration
 
@@ -70,7 +74,7 @@ Default login: `admin` / `admin123`.
 
 ## 🐞 Standalone Debugging
 
-`sdk/app.go` supports standalone HTTP mode. Use the `.vscode/launch.json` configs: **Module Auth** (`:8081`) and **Module Parties** (`:8082`).
+`sdk/app.go` supports standalone HTTP mode. Use the `.vscode/launch.json` configs: **Module Auth** (`:8081`), **Module Parties** (`:8082`) and **Module Audit** (`:8083`).
 
 ## 📊 Benchmark
 

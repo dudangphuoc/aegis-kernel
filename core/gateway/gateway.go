@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -22,15 +23,19 @@ type APIGateway struct {
 	cpStore   *controlplane.Store
 	cpHandler *controlplane.APIHandler
 	logger    *slog.Logger
+	jwtSecret []byte
+	// trustedProxies: proxy được phép báo IP client qua X-Forwarded-For (xem clientip.go)
+	trustedProxies []netip.Prefix
 }
 
-func NewAPIGateway(m *loader.ModuleManager, fm *feature.FeatureManager, store *controlplane.Store, cpHandler *controlplane.APIHandler, logger *slog.Logger) *APIGateway {
+func NewAPIGateway(m *loader.ModuleManager, fm *feature.FeatureManager, store *controlplane.Store, cpHandler *controlplane.APIHandler, jwtSecret []byte, logger *slog.Logger) *APIGateway {
 	return &APIGateway{
 		manager:   m,
 		fm:        fm,
 		cpStore:   store,
 		cpHandler: cpHandler,
 		logger:    logger,
+		jwtSecret: jwtSecret,
 	}
 }
 
@@ -39,7 +44,7 @@ func (gw *APIGateway) Handler() http.Handler {
 
 	// Chuỗi Middleware chuẩn trên Chi
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	r.Use(gw.clientIPMiddleware)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware)
 
@@ -52,6 +57,9 @@ func (gw *APIGateway) Handler() http.Handler {
 
 	// 2. Đăng ký toàn bộ API Control Plane & Migrations (/api/cp/*)
 	gw.cpHandler.RegisterRoutes(r)
+
+	// 2b. API chẩn đoán hệ thống (tách khỏi response nghiệp vụ)
+	r.Get("/api/v1/system/runtime-info", gw.handleRuntimeInfo)
 
 	// 3. Gán các Route động từ các MicroModule qua Chi MethodFunc
 	for _, loaded := range gw.manager.GetLoadedModules() {
@@ -69,6 +77,13 @@ func (gw *APIGateway) Handler() http.Handler {
 			)
 
 			r.MethodFunc(route.Method, route.Path, func(w http.ResponseWriter, req *http.Request) {
+				// 0. Call-Chain Guard: chặn gọi vòng A -> B -> A giữa các module
+				chain, err := nextCallChain(req, moduleName)
+				if err != nil {
+					writeJSON(w, http.StatusLoopDetected, map[string]string{"error": err.Error()})
+					return
+				}
+
 				// A. Bóc tách TenantID từ Header X-Tenant-ID hoặc query ?tenant_id=
 				tenantID := strings.TrimSpace(req.Header.Get("X-Tenant-ID"))
 				if tenantID == "" {
@@ -94,7 +109,22 @@ func (gw *APIGateway) Handler() http.Handler {
 					return
 				}
 
-				// B. Kiểm tra Feature Flag (nếu route có gán cờ)
+				// B. Xác thực JWT: bắt buộc với route RequireAuth, tùy chọn với route còn lại
+				claims, status, err := gw.verifyRequestJWT(req, tenantID)
+				if err != nil {
+					writeJSON(w, status, map[string]string{"error": err.Error()})
+					return
+				}
+				if route.RequireAuth && claims == nil {
+					w.Header().Set("WWW-Authenticate", `Bearer realm="aegis"`)
+					writeJSON(w, http.StatusUnauthorized, map[string]string{
+						"error": "authentication required",
+						"hint":  "provide header 'Authorization: Bearer <access_token>' from POST /api/v1/auth/login",
+					})
+					return
+				}
+
+				// C. Kiểm tra Feature Flag (nếu route có gán cờ)
 				if route.FeatureFlag != "" && tenantID != "" {
 					if !gw.fm.IsEnabledForTenant(tenantID, moduleName, route.FeatureFlag) {
 						writeJSON(w, http.StatusForbidden, map[string]string{
@@ -106,7 +136,7 @@ func (gw *APIGateway) Handler() http.Handler {
 					}
 				}
 
-				// C. Đọc body payload, query params và Chi URL params
+				// D. Đọc body payload, query params và Chi URL params
 				bodyBytes, _ := io.ReadAll(req.Body)
 				queryParams := make(map[string]string)
 				for k, v := range req.URL.Query() {
@@ -122,12 +152,8 @@ func (gw *APIGateway) Handler() http.Handler {
 					}
 				}
 
-				headers := make(map[string]string)
-				for k, v := range req.Header {
-					if len(v) > 0 {
-						headers[k] = v[0]
-					}
-				}
+				headers := buildModuleHeaders(req, claims)
+				headers[contract.HeaderCallChain] = chain
 
 				invReq := contract.InvocationRequest{
 					Path:        route.Path,
@@ -138,7 +164,7 @@ func (gw *APIGateway) Handler() http.Handler {
 					Tenant:      tenantCtx,
 				}
 
-				// D. Gọi RPC sang process của module
+				// E. Gọi RPC sang process của module
 				resp, err := mod.Execute(req.Context(), invReq)
 				if err != nil {
 					gw.logger.Error("module execution error", slog.Any("error", err))
@@ -165,7 +191,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Aegis-Call-Chain")
+		w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -217,6 +244,13 @@ func (gw *APIGateway) handleDynamicOpenAPI(w http.ResponseWriter, _ *http.Reques
 				"summary":     r.Summary,
 				"description": fmt.Sprintf("Module: %s (v%s) | FeatureFlag: %s | OptionalTenant: %v", loaded.Descriptor.Name, loaded.Descriptor.Version, r.FeatureFlag, r.OptionalTenant),
 				"parameters": []map[string]any{
+					{
+						"name":        "Authorization",
+						"in":          "header",
+						"required":    r.RequireAuth,
+						"description": "Bearer <JWT> từ POST /api/v1/auth/login",
+						"schema":      map[string]string{"type": "string"},
+					},
 					{
 						"name":        "X-Tenant-ID",
 						"in":          "header",

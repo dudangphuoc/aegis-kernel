@@ -12,6 +12,29 @@ services:
       - ./scripts/init-multi-postgres.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
       - pgdata:/var/lib/postgresql/data
 
+  # PgBouncer × Node: Data Plane của các module đi qua đây (transaction pooling)
+  pgbouncer-node-1:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    container_name: aegis-pgbouncer-1
+    depends_on:
+      - postgres
+    ports:
+      - "6432:6432"
+    volumes:
+      - ./scripts/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./scripts/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+
+  pgbouncer-node-2:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    container_name: aegis-pgbouncer-2
+    depends_on:
+      - postgres
+    ports:
+      - "6433:6432"
+    volumes:
+      - ./scripts/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./scripts/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+
   redis:
     image: redis:7-alpine
     container_name: golearn-redis

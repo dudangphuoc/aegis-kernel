@@ -9,7 +9,9 @@
             "program": "${workspaceFolder}/launcher",
             "env": {
                 "CP_DATABASE_URL": "postgres://postgres:postgres@localhost:5432/cp_db?sslmode=disable",
-                "PORT": "8080"
+                "PORT": "8080",
+                "AEGIS_JWT_SECRET": "dev-only-aegis-jwt-secret-change-me-0001",
+                "PGBOUNCER_NODES": "localhost:6432,localhost:6433"
             }
         },
         {
@@ -19,7 +21,8 @@
             "mode": "auto",
             "program": "${workspaceFolder}/modules/auth/cmd",
             "env": {
-                "STANDALONE_PORT": "8081"
+                "STANDALONE_PORT": "8081",
+                "AEGIS_JWT_SECRET": "dev-only-aegis-jwt-secret-change-me-0001"
             }
         },
         {
@@ -31,7 +34,16 @@
             "env": {
                 "STANDALONE_PORT": "8082"
             }
+        },
+        {
+            "name": "Debug: Module Audit (Standalone HTTP)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/modules/audit/cmd",
+            "env": {
+                "STANDALONE_PORT": "8083"
+            }
         }
     ]
 }
-

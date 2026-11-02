@@ -33,23 +33,19 @@ type TenantProvision struct {
 	ProvisionedAt    time.Time         `json:"provisioned_at"`
 }
 
+// AuthSession là phản hồi đăng nhập: JWT đã ký + thông tin user tối thiểu.
+// Không chứa thông tin hạ tầng (DSN, luồng xử lý) — xem GET /api/v1/system/runtime-info.
 type AuthSession struct {
-	Token          string    `json:"token"`
-	TenantID       string    `json:"tenant_id"`
-	Username       string    `json:"username"`
-	Role           string    `json:"role"`
-	SecurityLevel  string    `json:"security_level"`  // STANDARD | MFA_HIGH_ASSURANCE
-	AuthFlowUsed   string    `json:"auth_flow_used"`  // business:standard_login | feature:mfa_security (override)
-	DatabaseSource string    `json:"database_source"` // DB URL chứng minh tính cô lập
-	ExpiresAt      time.Time `json:"expires_at"`
+	AccessToken string      `json:"access_token"`
+	TokenType   string      `json:"token_type"` // Bearer
+	ExpiresIn   int64       `json:"expires_in"` // Giây
+	User        SessionUser `json:"user"`
 }
 
-type SecurityAuditLog struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenant_id"`
-	Username  string    `json:"username"`
-	Action    string    `json:"action"`
-	Details   string    `json:"details"`
-	Timestamp time.Time `json:"timestamp"`
+type SessionUser struct {
+	ID            string `json:"id"`
+	Username      string `json:"username"`
+	TenantID      string `json:"tenant_id"`
+	Role          string `json:"role"`
+	SecurityLevel string `json:"security_level"` // STANDARD | MFA_HIGH_ASSURANCE
 }
-

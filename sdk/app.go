@@ -3,12 +3,16 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"slices"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +20,7 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
 	"github.com/dudangphuoc/aegis-kernel/core/transport"
+	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
 )
 
@@ -28,21 +33,64 @@ type routeItem struct {
 
 // ModuleApp là base application hỗ trợ module đăng ký route, inject tenant và xử lý invocation
 type ModuleApp struct {
-	mu         sync.RWMutex
-	descriptor contract.ModuleDescriptor
-	routes     map[string]routeItem
-	initHook   func(ctx context.Context, cfg contract.ModuleInitConfig) error
+	mu            sync.RWMutex
+	descriptor    contract.ModuleDescriptor
+	routes        map[string]routeItem
+	initHook      func(ctx context.Context, cfg contract.ModuleInitConfig) error
+	shutdownHooks []func(ctx context.Context) error
+	database      *dbaudit.Manager // nil nếu module không dùng DB của tenant
+	subscriptions map[string]EventHandlerFunc
+	outbox        *Outbox
+	busEnabled    bool
+	logger        *slog.Logger
 }
 
 func NewModuleApp(desc contract.ModuleDescriptor) *ModuleApp {
-	return &ModuleApp{
-		descriptor: desc,
-		routes:     make(map[string]routeItem),
+	app := &ModuleApp{
+		descriptor:    desc,
+		routes:        make(map[string]routeItem),
+		subscriptions: make(map[string]EventHandlerFunc),
+		outbox:        NewOutbox(0),
+		logger:        slog.New(slog.NewTextHandler(os.Stderr, nil)).With(slog.String("module", desc.Name)),
 	}
+	// Ack của Kernel Bus -> relay audit xóa dòng outbox tương ứng trong DB của tenant
+	app.outbox.SetAckHandler(func(ids []string) {
+		if db := app.Database(); db != nil {
+			db.Acked(ids)
+		}
+	})
+	return app
+}
+
+// UseTenantDatabase bật DB theo tenant có audit tại tầng DB (trigger + outbox + relay qua Kernel Bus).
+// Repository lấy kết nối qua Database().Resolve(ctx). Gọi 1 lần trước sdk.Serve.
+func (app *ModuleApp) UseTenantDatabase() *dbaudit.Manager {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.database == nil {
+		app.database = dbaudit.NewManager(app.descriptor.Name, app, app.logger)
+		app.shutdownHooks = append(app.shutdownHooks, app.database.Close)
+	}
+	return app.database
+}
+
+// Database trả Manager đã bật bằng UseTenantDatabase (nil nếu chưa bật)
+func (app *ModuleApp) Database() *dbaudit.Manager {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	return app.database
 }
 
 func (app *ModuleApp) OnInitialize(fn func(ctx context.Context, cfg contract.ModuleInitConfig) error) {
 	app.initHook = fn
+}
+
+// OnShutdown đăng ký hook dọn dẹp tài nguyên (đóng DB pools, flush queue) khi module tắt.
+// Các hook chạy theo thứ tự ngược với thứ tự đăng ký.
+func (app *ModuleApp) OnShutdown(fn func(ctx context.Context) error) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.shutdownHooks = append(app.shutdownHooks, fn)
 }
 
 func (app *ModuleApp) RegisterRoute(def contract.RouteDefinition, handler RouteHandlerFunc) {
@@ -53,10 +101,18 @@ func (app *ModuleApp) RegisterRoute(def contract.RouteDefinition, handler RouteH
 }
 
 func (app *ModuleApp) GetDescriptor(_ context.Context) (contract.ModuleDescriptor, error) {
-	return app.descriptor, nil
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	desc := app.descriptor
+	desc.Subscriptions = slices.Clone(app.descriptor.Subscriptions)
+	return desc, nil
 }
 
 func (app *ModuleApp) Initialize(ctx context.Context, config contract.ModuleInitConfig) error {
+	// Giao nốt outbox audit còn tồn của các tenant đã biết (VD: module crash trước khi kịp relay)
+	if db := app.Database(); db != nil {
+		db.RegisterTenants(config.Tenants)
+	}
 	if app.initHook != nil {
 		return app.initHook(ctx, config)
 	}
@@ -86,13 +142,31 @@ func (app *ModuleApp) Execute(ctx context.Context, req contract.InvocationReques
 		})
 	}
 
-	// Đưa TenantContext vào Go Context
+	// Đưa TenantContext, chuỗi gọi (Cycle Guard) và ngữ cảnh audit vào Go Context.
+	// Ngữ cảnh audit chỉ là metadata gắn vào transaction; việc ghi nhận thay đổi do trigger ở tầng DB đảm nhận.
 	tenantCtx := multitenant.WithTenant(ctx, req.Tenant)
+	tenantCtx = withCallChain(tenantCtx, ParseCallChain(req.Headers[contract.HeaderCallChain]))
+	tenantCtx = dbaudit.WithRequestContext(tenantCtx, dbaudit.RequestContextFromInvocation(app.descriptor.Name, req))
 	return item.handler(tenantCtx, req)
 }
 
 func (app *ModuleApp) HealthCheck(_ context.Context) (bool, error) {
 	return true, nil
+}
+
+func (app *ModuleApp) Shutdown(ctx context.Context) error {
+	app.mu.Lock()
+	hooks := app.shutdownHooks
+	app.shutdownHooks = nil
+	app.mu.Unlock()
+
+	var errs []error
+	for i := len(hooks) - 1; i >= 0; i-- {
+		if err := hooks[i](ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // JSONResponse là helper định dạng nhanh InvocationResponse
@@ -122,6 +196,9 @@ func Serve(impl contract.MicroModule) {
 		return
 	}
 
+	if app, ok := impl.(*ModuleApp); ok {
+		app.UseKernelBus()
+	}
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: transport.Handshake,
 		Plugins: map[string]plugin.Plugin{
@@ -176,7 +253,7 @@ func runStandaloneDebugServer(impl contract.MicroModule, port string) {
 				Tenant: contract.TenantRequestContext{
 					TenantID:         tenantID,
 					ConnectionString: fmt.Sprintf("postgres://postgres:postgres@localhost:5432/%s_%s?sslmode=disable", desc.Name, tenantID),
-					Features:         map[string]bool{"mfa_security": true, "ekyc_verification": true, "security_audit": true, "employee_directory": true},
+					Features:         map[string]bool{"mfa_security": true, "ekyc_verification": true, "employee_directory": true},
 				},
 			}
 			resp, err := impl.Execute(req.Context(), invReq)
@@ -197,7 +274,20 @@ func runStandaloneDebugServer(impl contract.MicroModule, port string) {
 		Handler:           r,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	if err := server.ListenAndServe(); err != nil {
-		logger.Error("standalone debug server error", slog.Any("error", err))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("standalone debug server error", slog.Any("error", err))
+			stop()
+		}
+	}()
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
+	if err := impl.Shutdown(shutdownCtx); err != nil {
+		logger.Error("module shutdown error", slog.Any("error", err))
 	}
 }

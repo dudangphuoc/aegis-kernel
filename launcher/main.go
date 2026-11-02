@@ -7,13 +7,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/dudangphuoc/aegis-kernel/core/bus"
 	"github.com/dudangphuoc/aegis-kernel/core/controlplane"
 	"github.com/dudangphuoc/aegis-kernel/core/feature"
 	"github.com/dudangphuoc/aegis-kernel/core/gateway"
 	"github.com/dudangphuoc/aegis-kernel/core/loader"
+	"github.com/dudangphuoc/aegis-kernel/sdk/security"
 )
 
 func main() {
@@ -29,6 +32,31 @@ func main() {
 	cpStore, err := controlplane.NewStore(cpDBURL, logger)
 	if err != nil {
 		logger.Error("failed to initialize control plane store", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// Data Plane qua PgBouncer × Node (VD: PGBOUNCER_NODES=localhost:6432,localhost:6433)
+	if nodes := os.Getenv("PGBOUNCER_NODES"); nodes != "" {
+		cpStore.ConfigureRuntimePooler(strings.Split(nodes, ","))
+		logger.Info("data plane routed through pgbouncer", slog.Any("nodes", cpStore.PoolerNodes()))
+	} else {
+		logger.Warn("PGBOUNCER_NODES not set; modules connect directly to PostgreSQL")
+	}
+
+	// Bổ sung database audit_<tenant_id> cho các Tenant cũ (idempotent)
+	if err := cpStore.EnsureAuditModuleForAllTenants(context.Background()); err != nil {
+		logger.Warn("failed to provision audit database for some tenants", slog.Any("error", err))
+	}
+
+	// JWT secret dùng chung Gateway (verify) và module auth (sign) — module kế thừa qua env
+	jwtSecret, err := security.SecretFromEnv()
+	if errors.Is(err, security.ErrMissingSecret) {
+		_ = os.Setenv(security.EnvJWTSecret, security.GenerateSecret())
+		jwtSecret, err = security.SecretFromEnv()
+		logger.Warn("AEGIS_JWT_SECRET not set; generated an ephemeral secret (tokens are invalidated on restart)")
+	}
+	if err != nil {
+		logger.Error("invalid JWT secret", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -52,8 +80,24 @@ func main() {
 		logger.Error("error during module discovery", slog.Any("error", err))
 	}
 
+	// 3b. Kernel Event Bus: giao sự kiện (audit.recorded, domain events) giữa các module
+	var busNodes []bus.Node
+	for _, m := range moduleManager.GetLoadedModules() {
+		busNodes = append(busNodes, bus.Node{Name: m.Descriptor.Name, Module: m.Module, Subscriptions: m.Descriptor.Subscriptions})
+	}
+	eventBus := bus.New(busNodes, cpStore, bus.Config{}, logger)
+	eventBus.Start()
+
 	// 4. Khởi tạo API Gateway (tích hợp API Control Plane /api/cp/*)
-	apiGateway := gateway.NewAPIGateway(moduleManager, featureManager, cpStore, cpHandler, logger)
+	apiGateway := gateway.NewAPIGateway(moduleManager, featureManager, cpStore, cpHandler, jwtSecret, logger)
+
+	// Proxy tin cậy (CIDR/IP) được phép báo IP client qua X-Forwarded-For; mặc định không tin ai
+	trusted, err := gateway.ParseTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		logger.Error("invalid TRUSTED_PROXIES", slog.Any("error", err))
+		os.Exit(1)
+	}
+	apiGateway.SetTrustedProxies(trusted)
 
 	httpPort := os.Getenv("PORT")
 	if httpPort == "" {
@@ -82,6 +126,17 @@ func main() {
 	defer shutdownCancel()
 
 	_ = server.Shutdown(shutdownCtx)
-	moduleManager.ShutdownAll()
+
+	// Xả hết sự kiện còn trong outbox (VD: audit của request cuối) trước khi tắt module
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer drainCancel()
+	if err := eventBus.Drain(drainCtx); err != nil {
+		logger.Warn("event bus drain incomplete", slog.Any("error", err))
+	}
+
+	// Pha 2: module đóng DB pools rồi mới bị Kill (budget riêng, không dùng chung với HTTP drain)
+	moduleCtx, moduleCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer moduleCancel()
+	moduleManager.ShutdownAll(moduleCtx)
 	logger.Info("Micro-Kernel shutdown complete.")
 }

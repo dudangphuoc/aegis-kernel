@@ -2,11 +2,11 @@ package command
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/sdk/security"
 )
 
 type LoginCommand struct {
@@ -16,11 +16,12 @@ type LoginCommand struct {
 }
 
 type LoginHandler struct {
-	repo domain.AuthRepository
+	repo   domain.AuthRepository
+	secret []byte
 }
 
-func NewLoginHandler(repo domain.AuthRepository) *LoginHandler {
-	return &LoginHandler{repo: repo}
+func NewLoginHandler(repo domain.AuthRepository, jwtSecret []byte) *LoginHandler {
+	return &LoginHandler{repo: repo, secret: jwtSecret}
 }
 
 // Handle thực thi đăng nhập chuẩn (Standard Business) - chỉ cần username/password
@@ -32,34 +33,18 @@ func (h *LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (*domain.Au
 
 	user, err := h.repo.GetUserByUsername(ctx, cmd.Username)
 	if err != nil || user.Password != cmd.Password {
-		_ = h.repo.RecordAuditLog(ctx, &domain.SecurityAuditLog{
-			ID:        fmt.Sprintf("LOG-%d", time.Now().UnixNano()),
-			Username:  cmd.Username,
-			Action:    "LOGIN_FAILED",
-			Details:   "Invalid username or password (Standard Flow)",
-			Timestamp: time.Now(),
-		})
+		_ = h.repo.RecordSecurityEvent(ctx, "LOGIN_FAILED", cmd.Username, "Invalid username or password (Standard Flow)")
 		return nil, domain.ErrInvalidCredentials
 	}
 
-	session := &domain.AuthSession{
-		Token:          fmt.Sprintf("std-token-%s-%s-%d", tenant.TenantID, user.Username, time.Now().Unix()),
-		TenantID:       tenant.TenantID,
-		Username:       user.Username,
-		Role:           user.Role,
-		SecurityLevel:  "STANDARD",
-		AuthFlowUsed:   "business:standard_login",
-		DatabaseSource: tenant.ConnectionString,
-		ExpiresAt:      time.Now().Add(24 * time.Hour),
+	session, err := IssueSession(h.secret, tenant.TenantID, user, security.SecurityLevelStandard, 24*time.Hour)
+	if err != nil {
+		return nil, err
 	}
 
-	_ = h.repo.RecordAuditLog(ctx, &domain.SecurityAuditLog{
-		ID:        fmt.Sprintf("LOG-%d", time.Now().UnixNano()),
-		Username:  cmd.Username,
-		Action:    "LOGIN_SUCCESS",
-		Details:   "Logged in with Standard security",
-		Timestamp: time.Now(),
-	})
+	if err := h.repo.RecordSecurityEvent(ctx, "LOGIN_SUCCESS", cmd.Username, "Logged in with Standard security"); err != nil {
+		return nil, err // không phát hành phiên nếu không ghi được audit
+	}
 
 	return session, nil
 }

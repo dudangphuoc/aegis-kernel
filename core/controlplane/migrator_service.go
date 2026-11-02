@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	auditmigrations "github.com/dudangphuoc/aegis-kernel/modules/audit/migrations"
 	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
 	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
 	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
@@ -30,6 +31,8 @@ func (s *MigrationService) getScriptsForModule(moduleName string) []migrator.Mig
 		return authmigrations.GetAuthMigrationScripts()
 	case "parties":
 		return partiesmigrations.GetPartiesMigrationScripts()
+	case "audit":
+		return auditmigrations.GetAuditMigrationScripts()
 	default:
 		return nil
 	}
@@ -73,7 +76,8 @@ func (s *MigrationService) GetAllTenantMigrationStatuses(ctx context.Context) ([
 
 // RunMigrationForTenant chạy up hoặc down cho 1 Tenant x Module
 func (s *MigrationService) RunMigrationForTenant(ctx context.Context, tenantID, moduleName, action string) error {
-	tCtx, err := s.store.ResolveTenantRequestContext(ctx, tenantID, moduleName)
+	// Migrator dùng DSN admin (:5432): pg_advisory_lock theo session không chạy được qua PgBouncer transaction mode
+	adminDSN, err := s.store.ResolveAdminConnectionString(ctx, tenantID, moduleName)
 	if err != nil {
 		return err
 	}
@@ -83,7 +87,7 @@ func (s *MigrationService) RunMigrationForTenant(ctx context.Context, tenantID, 
 		return fmt.Errorf("no migration scripts registered for module '%s'", moduleName)
 	}
 
-	db, err := sql.Open("postgres", tCtx.ConnectionString)
+	db, err := sql.Open("postgres", adminDSN)
 	if err != nil {
 		return fmt.Errorf("failed to connect to db for tenant '%s': %w", tenantID, err)
 	}

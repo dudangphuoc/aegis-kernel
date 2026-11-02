@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"fmt"
 	"testing"
 	"time"
@@ -15,11 +16,18 @@ import (
 	ekycverification "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/ekyc_verification"
 	employeedirectory "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/employee_directory"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
+	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
+	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
+	"github.com/dudangphuoc/aegis-kernel/sdk/migrator/testdb"
 )
 
 func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
-	repo := storage.NewPostgresPartyRepo()
+	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable", partiesmigrations.GetPartiesMigrationScripts())
+	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/parties_tenant_b?sslmode=disable", partiesmigrations.GetPartiesMigrationScripts())
+	dbm := dbaudit.NewManager("parties", nil, slog.Default())
+	t.Cleanup(func() { _ = dbm.Close(context.Background()) })
+	repo := storage.NewPostgresPartyRepo(dbm)
 	stdHandler := command.NewRegisterPartyHandler(repo)
 	ekycOverride := ekycverification.NewEKYCRegisterOverrideHandler(repo)
 
@@ -31,14 +39,14 @@ func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
 	// Context Tenant A: ekyc_verification = false (Chấp nhận CMND 9 số)
 	ctxTenantA := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-a",
-		ConnectionString: "postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable",
+		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable"),
 		Features:         map[string]bool{"ekyc_verification": false, "employee_directory": true},
 	})
 
 	// Context Tenant B: ekyc_verification = true (Bắt buộc CCCD 12 số)
 	ctxTenantB := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-b",
-		ConnectionString: "postgres://postgres:postgres@localhost:5432/parties_tenant_b?sslmode=disable",
+		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/parties_tenant_b?sslmode=disable"),
 		Features:         map[string]bool{"ekyc_verification": true, "employee_directory": false},
 	})
 
@@ -119,12 +127,15 @@ func TestPartiesModule_MultiTenantIsolationAndEKYCOverride(t *testing.T) {
 }
 
 func TestPartiesModule_EmployeeDirectoryFeatureExtend(t *testing.T) {
-	repo := storage.NewPostgresPartyRepo()
+	testdb.EnsureMigrated(t, "postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable", partiesmigrations.GetPartiesMigrationScripts())
+	dbm := dbaudit.NewManager("parties", nil, slog.Default())
+	t.Cleanup(func() { _ = dbm.Close(context.Background()) })
+	repo := storage.NewPostgresPartyRepo(dbm)
 	directoryHandler := employeedirectory.NewEmployeeDirectoryQueryHandler(repo)
 
 	ctxTenantA := multitenant.WithTenant(context.Background(), contract.TenantRequestContext{
 		TenantID:         "tenant-a",
-		ConnectionString: "postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable",
+		ConnectionString: testdb.RuntimeDSN("postgres://postgres:postgres@localhost:5432/parties_tenant_a?sslmode=disable"),
 		Features:         map[string]bool{"employee_directory": true},
 	})
 

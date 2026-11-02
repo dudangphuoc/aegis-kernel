@@ -5,8 +5,8 @@ import "context"
 type AuthRepository interface {
 	GetUserByUsername(ctx context.Context, username string) (*UserAccount, error)
 	CreateUser(ctx context.Context, user *UserAccount) error
-	RecordAuditLog(ctx context.Context, log *SecurityAuditLog) error
-	ListAuditLogs(ctx context.Context) ([]*SecurityAuditLog, error)
+	// RecordSecurityEvent ghi sự kiện bảo mật vào outbox audit của tenant (tầng DB)
+	RecordSecurityEvent(ctx context.Context, name, subject, details string) error
 }
 
 type TenantProvisionRepository interface {

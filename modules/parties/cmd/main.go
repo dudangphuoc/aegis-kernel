@@ -14,6 +14,7 @@ import (
 	ekycverification "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/ekyc_verification"
 	employeedirectory "github.com/dudangphuoc/aegis-kernel/modules/parties/internal/features/employee_directory"
 	"github.com/dudangphuoc/aegis-kernel/sdk"
+	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
 )
 
@@ -25,7 +26,7 @@ func main() {
 	})
 
 	// 1. Dependency Injection - PostgreSQL Repository
-	partyRepo := storage.NewPostgresPartyRepo()
+	partyRepo := storage.NewPostgresPartyRepo(app.UseTenantDatabase())
 
 	// 2. CQRS Handlers
 	stdRegisterHandler := command.NewRegisterPartyHandler(partyRepo)
@@ -48,6 +49,7 @@ func main() {
 		RequireAuth:    true,
 		OptionalTenant: false,
 	}, func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error) {
+		dbaudit.SetAction(ctx, "REGISTER_PARTY")
 		var cmd command.RegisterPartyCommand
 		if err := json.Unmarshal(req.Body, &cmd); err != nil {
 			return sdk.JSONResponse(http.StatusBadRequest, map[string]string{"error": "invalid json body"})

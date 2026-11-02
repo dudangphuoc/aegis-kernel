@@ -11,13 +11,13 @@ import (
 )
 
 type RegisterPartyCommand struct {
-	Type               domain.PartyType         `json:"type"` // EMPLOYEE | CUSTOMER
-	FullName           string                   `json:"full_name"`
-	Email              string                   `json:"email"`
-	Phone              string                   `json:"phone"`
-	Identity           domain.IdentityDocument  `json:"identity"`
-	Employee           *domain.EmployeeProfile  `json:"employee,omitempty"`
-	Customer           *domain.CustomerProfile  `json:"customer,omitempty"`
+	Type     domain.PartyType        `json:"type"` // EMPLOYEE | CUSTOMER
+	FullName string                  `json:"full_name"`
+	Email    string                  `json:"email"`
+	Phone    string                  `json:"phone"`
+	Identity domain.IdentityDocument `json:"identity"`
+	Employee *domain.EmployeeProfile `json:"employee,omitempty"`
+	Customer *domain.CustomerProfile `json:"customer,omitempty"`
 }
 
 type RegisterPartyHandler struct {
@@ -53,18 +53,17 @@ func (h *RegisterPartyHandler) Handle(ctx context.Context, cmd RegisterPartyComm
 	cmd.Identity.VerificationStatus = "BASIC_DECLARED"
 
 	party := &domain.Party{
-		ID:             fmt.Sprintf("PRT-%d", time.Now().UnixNano()),
-		TenantID:       tenant.TenantID,
-		Type:           cmd.Type,
-		FullName:       cmd.FullName,
-		Email:          cmd.Email,
-		Phone:          cmd.Phone,
-		Identity:       cmd.Identity,
-		Employee:       cmd.Employee,
-		Customer:       cmd.Customer,
-		ProcessedBy:    "business:standard_register_party",
-		DatabaseSource: tenant.ConnectionString,
-		CreatedAt:      time.Now(),
+		ID:          fmt.Sprintf("PRT-%d", time.Now().UnixNano()),
+		TenantID:    tenant.TenantID,
+		Type:        cmd.Type,
+		FullName:    cmd.FullName,
+		Email:       cmd.Email,
+		Phone:       cmd.Phone,
+		Identity:    cmd.Identity,
+		Employee:    cmd.Employee,
+		Customer:    cmd.Customer,
+		ProcessedBy: "business:standard_register_party",
+		CreatedAt:   time.Now(),
 	}
 
 	if err := h.repo.Save(ctx, party); err != nil {
@@ -73,4 +72,3 @@ func (h *RegisterPartyHandler) Handle(ctx context.Context, cmd RegisterPartyComm
 
 	return party, nil
 }
-

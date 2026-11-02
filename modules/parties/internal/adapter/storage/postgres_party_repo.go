@@ -5,51 +5,32 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
-	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
 	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
-	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
-	"github.com/dudangphuoc/aegis-kernel/sdk/multitenant"
+	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 )
 
+// PostgresPartyRepo dùng DB đã bọc audit: INSERT/UPDATE (kể cả upsert) trên parties được trigger
+// ghi before/after vào outbox cùng transaction, repository không tự ghi audit.
 type PostgresPartyRepo struct {
-	connManager *multitenant.ConnectionManager[*sql.DB]
+	dbm *dbaudit.Manager
 }
 
-func NewPostgresPartyRepo() *PostgresPartyRepo {
-	runner := migrator.NewRunner()
-	cm := multitenant.NewConnectionManager[*sql.DB](func(tenantID, connStr string) (*sql.DB, error) {
-		db, err := sql.Open("postgres", connStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open postgres connection for %s: %w", tenantID, err)
-		}
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(2)
-		db.SetConnMaxLifetime(time.Hour)
-
-		// Tự động chạy migrations v1 khởi tạo
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := runner.MigrateUp(ctx, db, partiesmigrations.GetPartiesMigrationScripts()); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("failed to auto-migrate parties db for %s: %w", tenantID, err)
-		}
-
-		return db, nil
-	})
-	return &PostgresPartyRepo{connManager: cm}
+func NewPostgresPartyRepo(dbm *dbaudit.Manager) *PostgresPartyRepo {
+	return &PostgresPartyRepo{dbm: dbm}
 }
 
 func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
-	db, tenant, err := r.connManager.Resolve(ctx)
+	db, tenant, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return err
 	}
 
+	// JSONB truyền dạng string: với binary_parameters=yes (PgBouncer), []byte bị gửi ở định dạng binary
+	// và Postgres từ chối jsonb thiếu byte version
 	empJSON, _ := json.Marshal(p.Employee)
 	custJSON, _ := json.Marshal(p.Customer)
 
@@ -80,7 +61,7 @@ func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
 	_, err = db.ExecContext(ctx, query,
 		p.ID, tenant.TenantID, string(p.Type), p.FullName, p.Email, p.Phone,
 		string(p.Identity.Type), p.Identity.Number, p.Identity.IssuedDate, p.Identity.IssuedPlace,
-		p.Identity.VerificationStatus, empJSON, custJSON, p.ProcessedBy, tenant.ConnectionString, createdAt,
+		p.Identity.VerificationStatus, string(empJSON), string(custJSON), p.ProcessedBy, "", createdAt, // database_source: không lưu DSN (chứa mật khẩu)
 	)
 	if err != nil && strings.Contains(err.Error(), "duplicate key value") {
 		return domain.ErrDuplicateIdentity
@@ -89,7 +70,7 @@ func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
 }
 
 func (r *PostgresPartyRepo) FindByID(ctx context.Context, id string) (*domain.Party, error) {
-	db, _, err := r.connManager.Resolve(ctx)
+	db, _, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -97,14 +78,14 @@ func (r *PostgresPartyRepo) FindByID(ctx context.Context, id string) (*domain.Pa
 	query := `
 	SELECT id, tenant_id, party_type, full_name, email, phone,
 		   identity_type, identity_number, identity_issued_date, identity_issued_place,
-		   verification_status, employee_profile, customer_profile, processed_by, database_source, created_at
+		   verification_status, employee_profile, customer_profile, processed_by, created_at
 	FROM parties WHERE id = $1`
 
 	return r.scanParty(db.QueryRowContext(ctx, query, id))
 }
 
 func (r *PostgresPartyRepo) FindByIdentityNumber(ctx context.Context, idNumber string) (*domain.Party, error) {
-	db, _, err := r.connManager.Resolve(ctx)
+	db, _, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -112,14 +93,14 @@ func (r *PostgresPartyRepo) FindByIdentityNumber(ctx context.Context, idNumber s
 	query := `
 	SELECT id, tenant_id, party_type, full_name, email, phone,
 		   identity_type, identity_number, identity_issued_date, identity_issued_place,
-		   verification_status, employee_profile, customer_profile, processed_by, database_source, created_at
+		   verification_status, employee_profile, customer_profile, processed_by, created_at
 	FROM parties WHERE identity_number = $1`
 
 	return r.scanParty(db.QueryRowContext(ctx, query, idNumber))
 }
 
 func (r *PostgresPartyRepo) List(ctx context.Context, filterType string) ([]*domain.Party, error) {
-	db, _, err := r.connManager.Resolve(ctx)
+	db, _, err := r.dbm.Resolve(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +111,14 @@ func (r *PostgresPartyRepo) List(ctx context.Context, filterType string) ([]*dom
 		query = `
 		SELECT id, tenant_id, party_type, full_name, email, phone,
 			   identity_type, identity_number, identity_issued_date, identity_issued_place,
-			   verification_status, employee_profile, customer_profile, processed_by, database_source, created_at
+			   verification_status, employee_profile, customer_profile, processed_by, created_at
 		FROM parties WHERE UPPER(party_type) = UPPER($1) ORDER BY created_at DESC`
 		rows, err = db.QueryContext(ctx, query, filterType)
 	} else {
 		query = `
 		SELECT id, tenant_id, party_type, full_name, email, phone,
 			   identity_type, identity_number, identity_issued_date, identity_issued_place,
-			   verification_status, employee_profile, customer_profile, processed_by, database_source, created_at
+			   verification_status, employee_profile, customer_profile, processed_by, created_at
 		FROM parties ORDER BY created_at DESC`
 		rows, err = db.QueryContext(ctx, query)
 	}
@@ -165,7 +146,7 @@ func (r *PostgresPartyRepo) scanParty(row *sql.Row) (*domain.Party, error) {
 	err := row.Scan(
 		&p.ID, &p.TenantID, &partyType, &p.FullName, &p.Email, &p.Phone,
 		&idType, &p.Identity.Number, &p.Identity.IssuedDate, &p.Identity.IssuedPlace,
-		&p.Identity.VerificationStatus, &empJSON, &custJSON, &p.ProcessedBy, &p.DatabaseSource, &p.CreatedAt,
+		&p.Identity.VerificationStatus, &empJSON, &custJSON, &p.ProcessedBy, &p.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrPartyNotFound
@@ -193,7 +174,7 @@ func (r *PostgresPartyRepo) scanRow(rows *sql.Rows) (*domain.Party, error) {
 	err := rows.Scan(
 		&p.ID, &p.TenantID, &partyType, &p.FullName, &p.Email, &p.Phone,
 		&idType, &p.Identity.Number, &p.Identity.IssuedDate, &p.Identity.IssuedPlace,
-		&p.Identity.VerificationStatus, &empJSON, &custJSON, &p.ProcessedBy, &p.DatabaseSource, &p.CreatedAt,
+		&p.Identity.VerificationStatus, &empJSON, &custJSON, &p.ProcessedBy, &p.CreatedAt,
 	)
 	if err != nil {
 		return nil, err

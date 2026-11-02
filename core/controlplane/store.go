@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
+	auditmigrations "github.com/dudangphuoc/aegis-kernel/modules/audit/migrations"
 	authmigrations "github.com/dudangphuoc/aegis-kernel/modules/auth/migrations"
 	partiesmigrations "github.com/dudangphuoc/aegis-kernel/modules/parties/migrations"
 	"github.com/dudangphuoc/aegis-kernel/sdk/migrator"
@@ -47,6 +48,7 @@ type Store struct {
 	logger         *slog.Logger
 	migratorRunner *migrator.Runner
 	globalFeatures map[string]bool
+	poolerNodes    []string // PgBouncer × Node cho Data Plane; rỗng = kết nối trực tiếp
 }
 
 func NewStore(dbURL string, logger *slog.Logger) (*Store, error) {
@@ -271,12 +273,6 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	return err
 }
 
-// BuildConnectionString tự động xây dựng connection string chuẩn cho dynamic database của tenant
-func (s *Store) BuildConnectionString(dbName string) string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-		s.baseUser, s.basePass, s.baseHost, s.basePort, dbName, s.baseSSLMode)
-}
-
 // GetTenants trả về danh sách tất cả Tenants hiện có trong PostgreSQL
 func (s *Store) GetTenants(ctx context.Context) (map[string]TenantSetting, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id, name, plan, global_flags FROM cp_tenants ORDER BY created_at ASC`)
@@ -332,7 +328,18 @@ func (s *Store) GetTenants(ctx context.Context) (map[string]TenantSetting, error
 	return res, nil
 }
 
-// ResolveTenantRequestContext resolve context cho 1 Tenant x Module (Không hardcode)
+// ResolveAdminConnectionString trả DSN trực tiếp (:5432) của 1 Tenant x Module cho Migrator / DDL
+func (s *Store) ResolveAdminConnectionString(ctx context.Context, tenantID, moduleName string) (string, error) {
+	var dsn string
+	err := s.db.QueryRowContext(ctx, `SELECT connection_string FROM cp_tenant_modules WHERE tenant_id = $1 AND module_name = $2`, tenantID, moduleName).Scan(&dsn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("module '%s' not configured for tenant '%s'", moduleName, tenantID)
+	}
+	return dsn, err
+}
+
+// ResolveTenantRequestContext resolve context cho 1 Tenant x Module (Không hardcode).
+// ConnectionString trả về là DSN runtime (qua PgBouncer nếu được cấu hình) dành cho module.
 func (s *Store) ResolveTenantRequestContext(ctx context.Context, tenantID, moduleName string) (contract.TenantRequestContext, error) {
 	var name, plan string
 	var flagsJSON []byte
@@ -371,7 +378,7 @@ func (s *Store) ResolveTenantRequestContext(ctx context.Context, tenantID, modul
 
 	return contract.TenantRequestContext{
 		TenantID:         tenantID,
-		ConnectionString: modConnStr,
+		ConnectionString: s.BuildRuntimeConnectionString(tenantID, modConnStr),
 		Features:         mergedFeatures,
 		Settings:         modSett,
 	}, nil
@@ -424,11 +431,11 @@ func (s *Store) ProvisionTenant(
 	}
 
 	// Xây dựng connection string động (không hardcode)
-	authConn := s.BuildConnectionString(authDBName)
-	partiesConn := s.BuildConnectionString(partiesDBName)
+	authConn := s.BuildAdminConnectionString(authDBName)
+	partiesConn := s.BuildAdminConnectionString(partiesDBName)
 
 	if authFeatures == nil {
-		authFeatures = map[string]bool{"mfa_security": plan == "enterprise", "security_audit": true}
+		authFeatures = map[string]bool{"mfa_security": plan == "enterprise"}
 	}
 	if partiesFeatures == nil {
 		partiesFeatures = map[string]bool{"ekyc_verification": plan == "enterprise", "employee_directory": true}
@@ -484,6 +491,11 @@ func (s *Store) ProvisionTenant(
 		return fmt.Errorf("failed to migrate parties db for %s: %w", tenantID, err)
 	}
 
+	// Module audit: database riêng audit_<tenant_id> chứa 3 layer kiểm toán
+	if err := s.ensureAuditModuleLocked(ctx, tenantID); err != nil {
+		return err
+	}
+
 	s.logger.Info("✅ Successfully auto-provisioned tenant with dedicated databases & admin",
 		slog.String("tenant_id", tenantID),
 		slog.String("admin_username", adminUsername),
@@ -508,7 +520,72 @@ func (s *Store) DeleteTenant(ctx context.Context, tenantID string) error {
 	partiesDBName := fmt.Sprintf("parties_%s", tenantID)
 	_ = s.dropDatabase(ctx, authDBName)
 	_ = s.dropDatabase(ctx, partiesDBName)
+	_ = s.dropDatabase(ctx, fmt.Sprintf("audit_%s", tenantID))
 
+	return nil
+}
+
+// EnsureAuditModuleForAllTenants cấp phát database audit cho các Tenant tạo trước khi có module audit.
+// Idempotent: gọi mỗi lần Kernel khởi động.
+func (s *Store) EnsureAuditModuleForAllTenants(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT t.tenant_id FROM cp_tenants t
+		WHERE NOT EXISTS (SELECT 1 FROM cp_tenant_modules m WHERE m.tenant_id = t.tenant_id AND m.module_name = 'audit')`)
+	if err != nil {
+		return err
+	}
+	var missing []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		missing = append(missing, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, tenantID := range missing {
+		if err := s.ensureAuditModuleLocked(ctx, tenantID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		s.logger.Info("provisioned audit database for existing tenant", slog.String("tenant_id", tenantID))
+	}
+	return errors.Join(errs...)
+}
+
+// ensureAuditModuleLocked tạo audit_<tenant_id>, chạy migrations rồi mới đăng ký module (caller giữ s.mu)
+func (s *Store) ensureAuditModuleLocked(ctx context.Context, tenantID string) error {
+	dbName := fmt.Sprintf("audit_%s", tenantID)
+	if err := s.createDatabaseIfNotExists(ctx, dbName); err != nil {
+		return fmt.Errorf("failed to create database %s: %w", dbName, err)
+	}
+	conn := s.BuildAdminConnectionString(dbName)
+
+	db, err := sql.Open("postgres", conn)
+	if err != nil {
+		return fmt.Errorf("failed to connect to audit db: %w", err)
+	}
+	defer db.Close()
+	if err := s.migratorRunner.MigrateUp(ctx, db, auditmigrations.GetAuditMigrationScripts()); err != nil {
+		return fmt.Errorf("failed to migrate audit db for %s: %w", tenantID, err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO cp_tenant_modules (tenant_id, module_name, connection_string, features, settings)
+		VALUES ($1, 'audit', $2, '{}'::jsonb, '{}'::jsonb)
+		ON CONFLICT (tenant_id, module_name) DO NOTHING`, tenantID, conn)
+	if err != nil {
+		return fmt.Errorf("failed to register audit module for %s: %w", tenantID, err)
+	}
 	return nil
 }
 

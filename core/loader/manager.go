@@ -172,11 +172,24 @@ func (m *ModuleManager) GetLoadedModules() []*LoadedModule {
 	return res
 }
 
-func (m *ModuleManager) ShutdownAll() {
+// ShutdownAll tắt 2 pha: gọi Shutdown RPC để module đóng DB pools (song song, giới hạn bởi ctx),
+// sau đó Kill tiến trình plugin.
+func (m *ModuleManager) ShutdownAll(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	var wg sync.WaitGroup
 	for name, mod := range m.loadedModules {
-		m.logger.Info("terminating module process", slog.String("module", name))
-		mod.Client.Kill()
+		wg.Add(1)
+		go func(name string, mod *LoadedModule) {
+			defer wg.Done()
+			m.logger.Info("shutting down module", slog.String("module", name))
+			if err := mod.Module.Shutdown(ctx); err != nil {
+				m.logger.Warn("module shutdown did not complete cleanly", slog.String("module", name), slog.Any("error", err))
+			}
+			mod.Client.Kill()
+		}(name, mod)
 	}
+	wg.Wait()
+	m.loadedModules = make(map[string]*LoadedModule)
 }

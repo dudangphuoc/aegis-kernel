@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
@@ -11,9 +12,10 @@ import (
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/business/command"
 	"github.com/dudangphuoc/aegis-kernel/modules/auth/internal/domain"
 	mfasecurity "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/mfa_security"
-	securityaudit "github.com/dudangphuoc/aegis-kernel/modules/auth/internal/features/security_audit"
 	"github.com/dudangphuoc/aegis-kernel/sdk"
+	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
 	"github.com/dudangphuoc/aegis-kernel/sdk/cqrs"
+	"github.com/dudangphuoc/aegis-kernel/sdk/security"
 )
 
 func main() {
@@ -23,18 +25,22 @@ func main() {
 		Description: "Module quản lý đăng nhập, security, và cấp phát Tenants",
 	})
 
+	jwtSecret, err := security.SecretFromEnv()
+	if err != nil {
+		log.Fatalf("auth module: %v", err)
+	}
+
 	// 1. Dependency Injection - PostgreSQL Repository
-	authRepo := storage.NewPostgresAuthRepo()
+	authRepo := storage.NewPostgresAuthRepo(app.UseTenantDatabase())
 
 	// 2. CQRS Handlers
-	stdLoginHandler := command.NewLoginHandler(authRepo)
-	mfaLoginOverride := mfasecurity.NewMFALoginOverrideHandler(authRepo)
+	stdLoginHandler := command.NewLoginHandler(authRepo, jwtSecret)
+	mfaLoginOverride := mfasecurity.NewMFALoginOverrideHandler(authRepo, jwtSecret)
 
 	// Gắn kết Base Business và Feature Override qua FeatureDispatcher
 	loginDispatcher := cqrs.NewFeatureDispatcher[command.LoginCommand, *domain.AuthSession]("login_dispatcher", stdLoginHandler.Handle).
 		RegisterOverride("mfa_security", mfaLoginOverride.Handle)
 
-	auditLogsHandler := securityaudit.NewSecurityAuditQueryHandler(authRepo)
 
 	// 3. Đăng ký các Routes của Module
 	// Route 1: Đăng nhập (Áp dụng Feature Override tự động theo Tenant)
@@ -45,6 +51,7 @@ func main() {
 		RequireAuth:    false,
 		OptionalTenant: false,
 	}, func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error) {
+		dbaudit.SetAction(ctx, "LOGIN")
 		var cmd command.LoginCommand
 		if err := json.Unmarshal(req.Body, &cmd); err != nil {
 			return sdk.JSONResponse(http.StatusBadRequest, map[string]string{"error": "invalid json body"})
@@ -61,21 +68,6 @@ func main() {
 		return sdk.JSONResponse(http.StatusOK, session)
 	})
 
-	// Route 2: [Feature Extend] Xem Audit Logs của Tenant
-	app.RegisterRoute(contract.RouteDefinition{
-		Method:         "GET",
-		Path:           "/api/v1/auth/audit-logs",
-		Summary:        "Xem lịch sử nhật ký bảo mật (Chỉ mở khi Tenant bật feature security_audit)",
-		RequireAuth:    true,
-		OptionalTenant: false,
-		FeatureFlag:    "security_audit",
-	}, func(ctx context.Context, req contract.InvocationRequest) (contract.InvocationResponse, error) {
-		logs, err := auditLogsHandler.Handle(ctx)
-		if err != nil {
-			return sdk.JSONResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		return sdk.JSONResponse(http.StatusOK, map[string]any{"audit_logs": logs})
-	})
 
 	sdk.Serve(app)
 }

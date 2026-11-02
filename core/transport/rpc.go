@@ -61,6 +61,32 @@ func (c *RPCClient) HealthCheck(ctx context.Context) (bool, error) {
 	return resp, err
 }
 
+func (c *RPCClient) Shutdown(ctx context.Context) error {
+	var resp bool
+	return c.callCtx(ctx, "Plugin.Shutdown", true, &resp)
+}
+
+func (c *RPCClient) PollEvents(ctx context.Context, req contract.PollEventsRequest) (contract.PollEventsResponse, error) {
+	var resp contract.PollEventsResponse
+	return resp, c.callCtx(ctx, "Plugin.PollEvents", req, &resp)
+}
+
+func (c *RPCClient) HandleEvent(ctx context.Context, delivery contract.EventDelivery) error {
+	var resp bool
+	return c.callCtx(ctx, "Plugin.HandleEvent", delivery, &resp)
+}
+
+// callCtx gọi RPC nhưng trả về sớm khi ctx bị hủy (net/rpc không hỗ trợ context)
+func (c *RPCClient) callCtx(ctx context.Context, method string, args, reply any) error {
+	call := c.client.Go(method, args, reply, nil)
+	select {
+	case <-call.Done:
+		return call.Error
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // RPCServer lắng nghe cuộc gọi RPC phía Module (Plugin process)
 type RPCServer struct {
 	Impl contract.MicroModule
@@ -111,3 +137,27 @@ func (s *RPCServer) HealthCheck(args bool, resp *bool) error {
 	return nil
 }
 
+func (s *RPCServer) Shutdown(args bool, resp *bool) error {
+	if err := s.Impl.Shutdown(context.Background()); err != nil {
+		return err
+	}
+	*resp = true
+	return nil
+}
+
+func (s *RPCServer) PollEvents(req contract.PollEventsRequest, resp *contract.PollEventsResponse) error {
+	res, err := s.Impl.PollEvents(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	*resp = res
+	return nil
+}
+
+func (s *RPCServer) HandleEvent(delivery contract.EventDelivery, resp *bool) error {
+	if err := s.Impl.HandleEvent(context.Background(), delivery); err != nil {
+		return err
+	}
+	*resp = true
+	return nil
+}

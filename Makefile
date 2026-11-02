@@ -1,8 +1,8 @@
-.PHONY: build-modules build-kernel run run-ui test clean docker-up docker-down
+.PHONY: build-modules build-kernel run run-ui test test-pgbouncer clean docker-up docker-down
 
 # 1. Khởi động hạ tầng PostgreSQL Cluster
 docker-up:
-	docker compose up -d postgres
+	docker compose up -d postgres pgbouncer-node-1 pgbouncer-node-2
 
 docker-down:
 	docker compose down
@@ -12,6 +12,7 @@ build-modules:
 	@mkdir -p bin/modules
 	go build -o bin/modules/auth ./modules/auth/cmd
 	go build -o bin/modules/parties ./modules/parties/cmd
+	go build -o bin/modules/audit ./modules/audit/cmd
 
 # 3. Biên dịch Core Kernel Launcher
 build-kernel:
@@ -29,6 +30,10 @@ run-ui:
 # 6. Chạy Unit Test + Race Detector trên toàn bộ codebase
 test:
 	go test -v -race ./...
+
+# 6b. Chạy integration test của module qua PgBouncer (transaction pooling + binary_parameters)
+test-pgbouncer:
+	TEST_PGBOUNCER_ADDR=localhost:6432 go test -race -count=1 ./modules/...
 
 # 7. Dọn dẹp
 clean:

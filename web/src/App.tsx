@@ -107,6 +107,8 @@ export default function App() {
 
   // Playground state
   const [playTenant, setPlayTenant] = useState('');
+  // JWT của từng Tenant nhận được từ POST /api/v1/auth/login trong Playground
+  const [playTokens, setPlayTokens] = useState<Record<string, string>>({});
   const [playOutput, setPlayOutput] = useState<string>('Chọn Tenant và bấm nút kiểm thử để quan sát phản hồi thực tế từ Micro-Kernel...');
   const [authUsername, setAuthUsername] = useState('admin');
   const [authPassword, setAuthPassword] = useState('admin123');
@@ -417,7 +419,8 @@ export default function App() {
   };
 
   // Test API trong Playground
-  const runTestAPI = async (method: string, path: string, body?: any) => {
+  // useCPToken: gửi token Control Plane (dành cho API chẩn đoán) thay vì JWT của Tenant
+  const runTestAPI = async (method: string, path: string, body?: any, useCPToken = false) => {
     if (!playTenant) {
       showNotify('error', 'Vui lòng chọn một Tenant để gửi request');
       return;
@@ -428,6 +431,8 @@ export default function App() {
         'X-Tenant-ID': playTenant,
       };
       if (body) headers['Content-Type'] = 'application/json';
+      const bearer = useCPToken ? token : playTokens[playTenant];
+      if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
 
       const res = await fetch(`${API_BASE}${path}`, {
         method,
@@ -436,7 +441,10 @@ export default function App() {
       });
 
       const json = await res.json();
-      setPlayOutput(`HTTP ${res.status} ${res.statusText}\nX-Tenant-ID: ${playTenant}\nThời gian: ${new Date().toLocaleTimeString()}\n\n` + JSON.stringify(json, null, 2));
+      if (path === '/api/v1/auth/login' && res.ok && json.access_token) {
+        setPlayTokens(prev => ({ ...prev, [playTenant]: json.access_token }));
+      }
+      setPlayOutput(`HTTP ${res.status} ${res.statusText}\nX-Tenant-ID: ${playTenant}\nAuthorization: ${bearer ? 'Bearer ' + bearer.slice(0, 16) + '…' : '(none)'}\nThời gian: ${new Date().toLocaleTimeString()}\n\n` + JSON.stringify(json, null, 2));
     } catch (err: any) {
       setPlayOutput(`Lỗi gọi API: ${err.message}`);
     }
@@ -1531,27 +1539,6 @@ export default function App() {
                         {tenants[playTenant].modules?.['auth']?.features?.['mfa_security'] ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
                       </button>
                     </div>
-
-                    {/* Security Audit Feature */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', backgroundColor: '#0b0f19', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: '13.5px', color: '#f3f4f6' }}>security_audit (Feature Extension)</div>
-                        <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '2px' }}>
-                          Kích hoạt endpoint nhật ký an ninh /api/v1/auth/audit-logs dành riêng cho kiểm toán.
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleToggleFeature(playTenant, 'auth', 'security_audit', !!tenants[playTenant].modules?.['auth']?.features?.['security_audit'])}
-                        style={{
-                          backgroundColor: 'transparent',
-                          border: 'none',
-                          cursor: 'pointer',
-                          color: tenants[playTenant].modules?.['auth']?.features?.['security_audit'] ? '#10b981' : '#6b7280'
-                        }}
-                      >
-                        {tenants[playTenant].modules?.['auth']?.features?.['security_audit'] ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
-                      </button>
-                    </div>
                   </div>
                 </div>
 
@@ -1827,6 +1814,7 @@ export default function App() {
                       <div style={{ marginTop: '10px', fontSize: '11.5px', color: '#9ca3af', display: 'flex', gap: '12px' }}>
                         <span>MFA: <strong style={{ color: tenants[playTenant].modules?.['auth']?.features?.['mfa_security'] ? '#10b981' : '#ef4444' }}>{tenants[playTenant].modules?.['auth']?.features?.['mfa_security'] ? 'BẬT' : 'TẮT'}</strong></span>
                         <span>eKYC 12 số: <strong style={{ color: tenants[playTenant].modules?.['parties']?.features?.['ekyc_verification'] ? '#10b981' : '#ef4444' }}>{tenants[playTenant].modules?.['parties']?.features?.['ekyc_verification'] ? 'BẬT' : 'TẮT'}</strong></span>
+                        <span>JWT: <strong style={{ color: playTokens[playTenant] ? '#10b981' : '#ef4444' }}>{playTokens[playTenant] ? 'ĐÃ ĐĂNG NHẬP' : 'CHƯA (Login trước khi gọi API cần xác thực)'}</strong></span>
                       </div>
                     )}
                   </div>
@@ -1898,7 +1886,7 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={() => runTestAPI('GET', '/api/v1/auth/audit-logs')}
+                        onClick={() => runTestAPI('GET', '/api/v1/audits?limit=20')}
                         style={{
                           padding: '7px 14px',
                           backgroundColor: '#1f2937',
@@ -1909,7 +1897,37 @@ export default function App() {
                           cursor: 'pointer'
                         }}
                       >
-                        <span>Audit Logs (Extension)</span>
+                        <span>Audit Trail (3 tầng)</span>
+                      </button>
+
+                      <button
+                        onClick={() => runTestAPI('GET', '/api/v1/system/runtime-info', undefined, true)}
+                        style={{
+                          padding: '7px 14px',
+                          backgroundColor: '#1f2937',
+                          border: '1px solid #374151',
+                          borderRadius: '6px',
+                          color: '#d1d5db',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span>Runtime Info (Hệ thống)</span>
+                      </button>
+
+                      <button
+                        onClick={() => runTestAPI('GET', '/api/v1/audits/verify-integrity')}
+                        style={{
+                          padding: '7px 14px',
+                          backgroundColor: '#1f2937',
+                          border: '1px solid #374151',
+                          borderRadius: '6px',
+                          color: '#d1d5db',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span>Verify Hash Chain</span>
                       </button>
                     </div>
                   </div>

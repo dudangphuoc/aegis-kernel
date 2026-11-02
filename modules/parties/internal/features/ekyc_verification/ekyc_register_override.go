@@ -52,18 +52,17 @@ func (h *EKYCRegisterOverrideHandler) Handle(ctx context.Context, cmd command.Re
 	cmd.Identity.VerificationStatus = "EKYC_CHIP_VERIFIED"
 
 	party := &domain.Party{
-		ID:             fmt.Sprintf("PRT-EKYC-%d", time.Now().UnixNano()),
-		TenantID:       tenant.TenantID,
-		Type:           cmd.Type,
-		FullName:       cmd.FullName,
-		Email:          cmd.Email,
-		Phone:          cmd.Phone,
-		Identity:       cmd.Identity,
-		Employee:       cmd.Employee,
-		Customer:       cmd.Customer,
-		ProcessedBy:    "feature:ekyc_verification (override)",
-		DatabaseSource: tenant.ConnectionString,
-		CreatedAt:      time.Now(),
+		ID:          fmt.Sprintf("PRT-EKYC-%d", time.Now().UnixNano()),
+		TenantID:    tenant.TenantID,
+		Type:        cmd.Type,
+		FullName:    cmd.FullName,
+		Email:       cmd.Email,
+		Phone:       cmd.Phone,
+		Identity:    cmd.Identity,
+		Employee:    cmd.Employee,
+		Customer:    cmd.Customer,
+		ProcessedBy: "feature:ekyc_verification (override)",
+		CreatedAt:   time.Now(),
 	}
 
 	if err := h.repo.Save(ctx, party); err != nil {
@@ -72,4 +71,3 @@ func (h *EKYCRegisterOverrideHandler) Handle(ctx context.Context, cmd command.Re
 
 	return party, nil
 }
-

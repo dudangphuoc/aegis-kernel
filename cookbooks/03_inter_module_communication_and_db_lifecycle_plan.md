@@ -107,34 +107,39 @@ flowchart TD
 
 ### 2.2. Checklist Triển Khai
 
-- [ ] **Bước 1: Hạ tầng `PgBouncer × Node` (`docker-compose.yml` & `scripts/pgbouncer/`)**
-  - [ ] Cấu hình cụm `pgbouncer-node-1` (`:6432`) và `pgbouncer-node-2` (`:6433`) với `pool_mode = transaction` và wildcard `* = host=postgres port=5432`.
-  - [ ] Cập nhật `core/controlplane/store.go`: Tách biệt `BuildAdminConnectionString` (`:5432` cho DDL & Migration Advisory Lock) và `BuildRuntimeConnectionString` (`:6432/:6433` kèm `binary_parameters=yes` cho các Module `auth`, `parties`, `audit`).
-- [ ] **Bước 2: Tái thiết lập Database & Module Lifecycle (`sdk/multitenant`, `sdk/app.go`, `core/contract`)**
-  - [ ] Nâng cấp `ConnectionManager` hỗ trợ **Idle TTL Eviction** (`15m`), **LRU Eviction**, **Safe Rebind** (đóng pool cũ khi đổi `ConnectionString`), và **`CloseAll()`**.
-  - [ ] Loại bỏ lệnh gọi `runner.MigrateUp(...)` khỏi `NewPostgresAuthRepo` và `NewPostgresPartyRepo`.
-  - [ ] Bổ sung `Shutdown(ctx context.Context) error` vào `contract.MicroModule`, `core/transport/rpc.go` và `core/loader/manager.go`.
-- [ ] **Bước 3: Nâng cấp Login sang chuẩn JWT & Tách API Thông Tin Hệ Thống (`sdk/jwt`, `modules/auth`, `core/gateway`)**
-  - [ ] Tạo package `sdk/security/jwt.go`: Ký (`SignToken`) và xác thực (`VerifyToken`) chuẩn JWT (`HS256`) chứa các claims chuẩn (`sub`, `usr`, `tid`, `rol`, `sec_level`, `iat`, `exp`, `jti`).
-  - [ ] Cập nhật `LoginHandler` và `MFALoginOverrideHandler` trong `modules/auth`: Phát hành chuỗi JWT chuẩn; loại bỏ `DatabaseSource` và `AuthFlowUsed` ra khỏi struct `AuthSession` trả về cho client.
-  - [ ] Loại bỏ `DatabaseSource` và `ProcessedBy` khỏi JSON response của `domain.Party` trong `modules/parties`.
-  - [ ] Tạo API hệ thống riêng biệt `GET /api/v1/system/runtime-info` trên Gateway để trả về thông tin chẩn đoán (Tenant ID, Active Features, Module Route Matrix, Masked Pool Target, Execution Mode) phục vụ Admin/Developer.
-  - [ ] Cập nhật Gateway Middleware: Tự động giải mã `Authorization: Bearer <jwt>`, kiểm tra khớp `claims.TenantID == X-Tenant-ID`, và đính kèm thông tin Actor (`X-Actor-ID`, `X-Actor-Username`, `X-Actor-Role`, `X-Client-IP`, `X-User-Agent`) vào `InvocationRequest`.
-- [ ] **Bước 4: Xây dựng SDK Entity Snapshot & Audit Interceptor Bất Đồng Bộ (`sdk/audit/`)**
-  - [ ] Định nghĩa interface `SnapshottableEntity` (`EntityName() string`, `TableName() string`, `EntityID() string`, `Snapshot() map[string]any`).
-  - [ ] Xây dựng `AuditTracker` gắn vào `context.Context` của mỗi Request để các Repository ghi nhận các thay đổi thực thể (`RecordInsert`, `RecordUpdate(before, after)`, `RecordDelete(before)`).
-  - [ ] Xây dựng **Audit Interceptor Middleware** trong `sdk/app.go`: Tự động bọc các route thay đổi dữ liệu (`POST`, `PUT`, `PATCH`, `DELETE`), thu thập toàn bộ ngữ cảnh Client (`IP`, `UserAgent`, `Actor`, `RequestID`) + danh sách `EntityChanges`, và đẩy **bất đồng bộ (Async Non-blocking)** về Kernel Bus để chuyển tới module `audit`.
-- [ ] **Bước 5: Xây dựng Module `[audit]` Độc Lập với Thiết Kế 3 Layer & Hash Toàn Vẹn (`modules/audit/`)**
-  - [ ] Khởi tạo module mới `modules/audit` (tự động cấp phát DB `audit_<tenant_id>` khi tạo Tenant trong Control Plane).
-  - [ ] Thiết kế SQL Migration `0001_init_audit_layers.up.sql` gồm 3 bảng chuẩn hóa:
+- [x] **Bước 1: Hạ tầng `PgBouncer × Node` (`docker-compose.yml` & `scripts/pgbouncer/`)**
+  - [x] Cấu hình cụm `pgbouncer-node-1` (`:6432`) và `pgbouncer-node-2` (`:6433`) với `pool_mode = transaction` và wildcard `* = host=postgres port=5432`.
+  - [x] Cập nhật `core/controlplane/store.go`: Tách biệt `BuildAdminConnectionString` (`:5432` cho DDL & Migration Advisory Lock) và `BuildRuntimeConnectionString` (`:6432/:6433` kèm `binary_parameters=yes` cho các Module `auth`, `parties`, `audit`).
+- [x] **Bước 2: Tái thiết lập Database & Module Lifecycle (`sdk/multitenant`, `sdk/app.go`, `core/contract`)**
+  - [x] Nâng cấp `ConnectionManager` hỗ trợ **Idle TTL Eviction** (`15m`), **LRU Eviction**, **Safe Rebind** (đóng pool cũ khi đổi `ConnectionString`), và **`CloseAll()`**.
+  - [x] Loại bỏ lệnh gọi `runner.MigrateUp(...)` khỏi `NewPostgresAuthRepo` và `NewPostgresPartyRepo`.
+  - [x] Bổ sung `Shutdown(ctx context.Context) error` vào `contract.MicroModule`, `core/transport/rpc.go` và `core/loader/manager.go`.
+- [x] **Bước 3: Nâng cấp Login sang chuẩn JWT & Tách API Thông Tin Hệ Thống (`sdk/jwt`, `modules/auth`, `core/gateway`)**
+  - [x] Tạo package `sdk/security/jwt.go`: Ký (`SignToken`) và xác thực (`VerifyToken`) chuẩn JWT (`HS256`) chứa các claims chuẩn (`sub`, `usr`, `tid`, `rol`, `sec_level`, `iat`, `exp`, `jti`).
+  - [x] Cập nhật `LoginHandler` và `MFALoginOverrideHandler` trong `modules/auth`: Phát hành chuỗi JWT chuẩn; loại bỏ `DatabaseSource` và `AuthFlowUsed` ra khỏi struct `AuthSession` trả về cho client.
+  - [x] Loại bỏ `DatabaseSource` và `ProcessedBy` khỏi JSON response của `domain.Party` trong `modules/parties`.
+  - [x] Tạo API hệ thống riêng biệt `GET /api/v1/system/runtime-info` trên Gateway để trả về thông tin chẩn đoán (Tenant ID, Active Features, Module Route Matrix, Masked Pool Target, Execution Mode) phục vụ Admin/Developer.
+  - [x] Cập nhật Gateway Middleware: Tự động giải mã `Authorization: Bearer <jwt>`, kiểm tra khớp `claims.TenantID == X-Tenant-ID`, và đính kèm thông tin Actor (`X-Actor-ID`, `X-Actor-Username`, `X-Actor-Role`, `X-Client-IP`, `X-User-Agent`) vào `InvocationRequest`.
+- [x] **Bước 4: Xây dựng SDK Entity Snapshot & Audit Interceptor Bất Đồng Bộ (`sdk/audit/`)**
+  - [x] Định nghĩa interface `SnapshottableEntity` (`EntityName() string`, `TableName() string`, `EntityID() string`, `Snapshot() map[string]any`).
+  - [x] Xây dựng `AuditTracker` gắn vào `context.Context` của mỗi Request để các Repository ghi nhận các thay đổi thực thể (`RecordInsert`, `RecordUpdate(before, after)`, `RecordDelete(before)`).
+  - [x] Xây dựng **Audit Interceptor Middleware** trong `sdk/app.go`: Tự động bọc các route thay đổi dữ liệu (`POST`, `PUT`, `PATCH`, `DELETE`), thu thập toàn bộ ngữ cảnh Client (`IP`, `UserAgent`, `Actor`, `RequestID`) + danh sách `EntityChanges`, và đẩy **bất đồng bộ (Async Non-blocking)** về Kernel Bus để chuyển tới module `audit`.
+  > **Cập nhật thiết kế (thay cho Interceptor ở tầng API):** audit được bắt **tại tầng DB** (`sdk/dbaudit`).
+  > Trigger Postgres trên từng bảng ghi before/after vào `aegis_audit_outbox` trong cùng transaction với dữ liệu nghiệp vụ
+  > (cột bí mật chỉ ghi `[REDACTED:CHANGED]`, cột hạ tầng bị loại). DB wrapper gắn ngữ cảnh request bằng `set_config(..., true)`.
+  > Relay gom outbox theo transaction thành Envelope, đẩy qua Kernel Bus và chỉ xóa dòng khi được ack; quét định kỳ 30s
+  > để bắt cả lần ghi không qua SDK (psql, script, seed — actor `SYSTEM`). Không còn `RecordInsert/RecordUpdate` trong repository.
+- [x] **Bước 5: Xây dựng Module `[audit]` Độc Lập với Thiết Kế 3 Layer & Hash Toàn Vẹn (`modules/audit/`)**
+  - [x] Khởi tạo module mới `modules/audit` (tự động cấp phát DB `audit_<tenant_id>` khi tạo Tenant trong Control Plane).
+  - [x] Thiết kế SQL Migration `0001_init_audit_layers.up.sql` gồm 3 bảng chuẩn hóa:
     1. `audits`: Lưu ngữ cảnh Request, Client Info, IP, Actor.
     2. `entity_changes`: Lưu bảng bị tác động (`table_name`, `entity_id`, `operation`) kèm `before_snapshot` (JSONB) và `after_snapshot` (JSONB).
     3. `entity_audit_logs`: Lưu chi tiết từng trường thay đổi (`field_name`, `old_value`, `new_value`) kèm `prev_hash` và `integrity_hash` (SHA-256).
-  - [ ] Xây dựng **Diff & Hash Chain Engine**: Tự động so sánh `before_snapshot` vs `after_snapshot` để tách ra danh sách các cột thay đổi, tính toán mã băm `SHA-256` nối tiếp với bản ghi trước đó, và cung cấp API kiểm tra tính toàn vẹn (`GET /api/v1/audits/verify-integrity`).
-  - [ ] Dọn dẹp bảng `security_audit_logs` cũ ra khỏi `modules/auth` để tập trung 100% về `modules/audit`.
-- [ ] **Bước 6: Xây dựng Kernel Event Bus & Call-Chain Cycle Guard (`core/bus/`)**
-  - [ ] Triển khai bộ điều phối sự kiện bất đồng bộ trong Kernel (`PublishEvent` / `OnEvent`) kết hợp hàng đợi Worker Pool cho phép đẩy dữ liệu Audit và Domain Events giữa các Module.
-  - [ ] Triển khai `X-Aegis-Call-Chain` Guard chặn các lệnh gọi vòng lặp đồng bộ (`A -> B -> A`).
+  - [x] Xây dựng **Diff & Hash Chain Engine**: Tự động so sánh `before_snapshot` vs `after_snapshot` để tách ra danh sách các cột thay đổi, tính toán mã băm `SHA-256` nối tiếp với bản ghi trước đó, và cung cấp API kiểm tra tính toàn vẹn (`GET /api/v1/audits/verify-integrity`).
+  - [x] Dọn dẹp bảng `security_audit_logs` cũ ra khỏi `modules/auth` để tập trung 100% về `modules/audit`.
+- [x] **Bước 6: Xây dựng Kernel Event Bus & Call-Chain Cycle Guard (`core/bus/`)**
+  - [x] Triển khai bộ điều phối sự kiện bất đồng bộ trong Kernel (`PublishEvent` / `OnEvent`) kết hợp hàng đợi Worker Pool cho phép đẩy dữ liệu Audit và Domain Events giữa các Module.
+  - [x] Triển khai `X-Aegis-Call-Chain` Guard chặn các lệnh gọi vòng lặp đồng bộ (`A -> B -> A`).
 
 ---
 
