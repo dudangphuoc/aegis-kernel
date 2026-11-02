@@ -3,9 +3,12 @@ package dbaudit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/lib/pq"
 
 	"github.com/dudangphuoc/aegis-kernel/core/contract"
 	"github.com/dudangphuoc/aegis-kernel/sdk/audit"
@@ -75,6 +78,14 @@ func (m *Manager) Close(ctx context.Context) error {
 	return m.cm.CloseAll()
 }
 
+// Forget bỏ mọi trạng thái của tenant (pool, relay) khi database của tenant đã bị xóa
+func (m *Manager) Forget(tenantID string) {
+	if m.relay != nil {
+		m.relay.forget(tenantID)
+	}
+	m.cm.Evict(tenantID)
+}
+
 func (m *Manager) committed(tenantID, dsn string) {
 	if m.relay != nil {
 		m.relay.markDirty(tenantID, dsn)
@@ -94,4 +105,10 @@ func (m *Manager) withTenantDB(tenantID, dsn string, fn func(*sql.DB) error) err
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	return fn(db)
+}
+
+// isDatabaseGone: database của tenant không còn (tenant đã bị xóa) — thử lại cũng vô ích
+func isDatabaseGone(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "3D000" // invalid_catalog_name
 }

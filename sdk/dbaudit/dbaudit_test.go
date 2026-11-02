@@ -307,3 +307,24 @@ func TestPeriodicSweepCatchesWritesBypassingSDK(t *testing.T) {
 		t.Fatal("sweep of an idle tenant must not open a long-lived pool")
 	}
 }
+
+func TestRelayForgetsTenantWhoseDatabaseWasDropped(t *testing.T) {
+	m := NewManager("widgets-svc", &fakePublisher{}, quiet)
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+	gone := "postgres://postgres:postgres@localhost:5432/dbaudit_dropped_tenant?sslmode=disable"
+	m.RegisterTenants(map[string]contract.TenantModuleConfig{"deleted": {ConnectionString: gone}})
+
+	known := func() bool {
+		m.relay.mu.Lock()
+		defer m.relay.mu.Unlock()
+		_, k := m.relay.known["deleted"]
+		_, d := m.relay.dirty["deleted"]
+		return k || d
+	}
+	waitFor(t, func() bool { return !known() })
+
+	m.relay.sweepAll() // quét định kỳ không được kết nối lại tenant đã bị xóa
+	if known() {
+		t.Fatal("dropped tenant must not come back on sweep")
+	}
+}

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
 	"github.com/dudangphuoc/aegis-kernel/modules/parties/internal/domain"
 	"github.com/dudangphuoc/aegis-kernel/sdk/dbaudit"
+	_ "github.com/lib/pq"
 )
 
 // PostgresPartyRepo dùng DB đã bọc audit: INSERT/UPDATE (kể cả upsert) trên parties được trigger
@@ -38,11 +38,11 @@ func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
 	INSERT INTO parties (
 		id, tenant_id, party_type, full_name, email, phone,
 		identity_type, identity_number, identity_issued_date, identity_issued_place,
-		verification_status, employee_profile, customer_profile, processed_by, database_source, created_at
+		verification_status, employee_profile, customer_profile, processed_by, created_at
 	) VALUES (
 		$1, $2, $3, $4, $5, $6,
 		$7, $8, $9, $10,
-		$11, $12, $13, $14, $15, $16
+		$11, $12, $13, $14, $15
 	)
 	ON CONFLICT (identity_number) DO UPDATE SET
 		full_name = EXCLUDED.full_name,
@@ -61,7 +61,7 @@ func (r *PostgresPartyRepo) Save(ctx context.Context, p *domain.Party) error {
 	_, err = db.ExecContext(ctx, query,
 		p.ID, tenant.TenantID, string(p.Type), p.FullName, p.Email, p.Phone,
 		string(p.Identity.Type), p.Identity.Number, p.Identity.IssuedDate, p.Identity.IssuedPlace,
-		p.Identity.VerificationStatus, string(empJSON), string(custJSON), p.ProcessedBy, "", createdAt, // database_source: không lưu DSN (chứa mật khẩu)
+		p.Identity.VerificationStatus, string(empJSON), string(custJSON), p.ProcessedBy, createdAt,
 	)
 	if err != nil && strings.Contains(err.Error(), "duplicate key value") {
 		return domain.ErrDuplicateIdentity
@@ -190,4 +190,3 @@ func (r *PostgresPartyRepo) scanRow(rows *sql.Rows) (*domain.Party, error) {
 	}
 	return &p, nil
 }
-

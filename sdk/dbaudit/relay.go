@@ -94,6 +94,20 @@ func (r *relay) sweepAll() {
 	r.mu.Unlock()
 }
 
+// forget bỏ tenant khỏi relay: dòng outbox nằm trong database đã bị xóa nên không còn gì để giao
+func (r *relay) forget(tenantID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.known, tenantID)
+	delete(r.dirty, tenantID)
+	delete(r.inflight, tenantID)
+	for id, p := range r.pending {
+		if p.tenantID == tenantID {
+			delete(r.pending, id)
+		}
+	}
+}
+
 func (r *relay) acked(ids []string) {
 	r.mu.Lock()
 	r.acks = append(r.acks, ids...)
@@ -168,6 +182,10 @@ func (r *relay) processAcks() {
 			delete(r.inflight[p.tenantID], s) // lỗi xóa: dòng còn trong DB và sẽ được gửi lại (idempotent)
 		}
 		r.mu.Unlock()
+		if isDatabaseGone(err) {
+			r.dropTenant(p.tenantID)
+			continue
+		}
 		if err != nil {
 			r.logger.Warn("delete acked audit outbox rows failed", slog.String("tenant_id", p.tenantID), slog.Any("error", err))
 		}
@@ -191,6 +209,10 @@ func (r *relay) drainDirty() {
 
 	for tenantID, st := range snapshot {
 		more, err := r.drainTenant(tenantID, st.dsn)
+		if isDatabaseGone(err) {
+			r.dropTenant(tenantID)
+			continue
+		}
 		if err != nil {
 			r.logger.Warn("audit outbox relay failed", slog.String("tenant_id", tenantID), slog.Any("error", err))
 			continue // giữ dirty, thử lại ở tick sau
@@ -205,6 +227,11 @@ func (r *relay) drainDirty() {
 		}
 		r.mu.Unlock()
 	}
+}
+
+func (r *relay) dropTenant(tenantID string) {
+	r.logger.Info("tenant database no longer exists, dropping tenant from audit relay", slog.String("tenant_id", tenantID))
+	r.m.Forget(tenantID)
 }
 
 type outboxRow struct {

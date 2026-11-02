@@ -140,6 +140,16 @@ func (m *ConnectionManager[DB]) Len() int {
 	return len(m.instances)
 }
 
+// Evict đóng và bỏ pool của tenant (VD: tenant đã bị xóa, database không còn tồn tại)
+func (m *ConnectionManager[DB]) Evict(tenantID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.instances[tenantID]; ok {
+		closeInstance(e.inst)
+		delete(m.instances, tenantID)
+	}
+}
+
 // CloseAll dừng janitor và đóng toàn bộ pool. Resolve sau đó trả về ErrManagerClosed.
 func (m *ConnectionManager[DB]) CloseAll() error {
 	m.mu.Lock()
